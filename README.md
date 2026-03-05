@@ -1,14 +1,45 @@
-# rust-isam
+# highlandcows
 
-![Build & Tests](https://github.com/njacobs5074/rust-isam/actions/workflows/rust.yml/badge.svg?branch=master)
+![Build & Tests](https://github.com/njacobs5074/highlandcows/actions/workflows/rust.yml/badge.svg?branch=master)
 
-A persistent ISAM (Indexed Sequential Access Method) library written in Rust. Records are stored on disk indexed by a user-supplied key type, with support for full CRUD operations, key-ordered iteration, and compaction.
+A Cargo workspace of Rust libraries published under the `highlandcows` umbrella crate.
 
 > **Created with [Claude Code](https://claude.ai/code) by Anthropic.**
 
 ---
 
-## Features
+## Crates
+
+| Crate | Description |
+|-------|-------------|
+| [`highlandcows-isam`](crates/isam/) | Persistent ISAM key/value store backed by an on-disk B-tree |
+
+---
+
+## Usage
+
+Add the umbrella crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+highlandcows = { path = "path/to/highlandcows/crates/highlandcows" }
+# or, once published to crates.io:
+highlandcows = "0.1"
+```
+
+Then import what you need:
+
+```rust
+use highlandcows::Isam;
+```
+
+---
+
+## highlandcows-isam
+
+A persistent ISAM (Indexed Sequential Access Method) library. Records are stored on disk indexed by a user-supplied key type, with support for full CRUD operations, key-ordered iteration, and compaction.
+
+### Features
 
 - **Generic key and value types** — any type that implements `serde::Serialize + DeserializeOwned + Ord + Clone` can be used as a key; any serializable type can be a value
 - **On-disk B-tree index** — page-based (4096 bytes/page), no in-memory tree required
@@ -17,23 +48,19 @@ A persistent ISAM (Indexed Sequential Access Method) library written in Rust. Re
 - **Compaction** — atomically rewrites the data and index files, removing tombstones and stale records
 - **Persistence** — data survives process restart; just `open()` the same path
 
----
-
-## File layout on disk
+### File layout on disk
 
 Each logical database is stored as two files:
 
-| File       | Contents                                      |
-|------------|-----------------------------------------------|
-| `*.idb`    | Append-only data records (bincode-encoded)    |
-| `*.idx`    | On-disk B-tree index (fixed 4096-byte pages)  |
+| File    | Contents                                      |
+|---------|-----------------------------------------------|
+| `*.idb` | Append-only data records (bincode-encoded)    |
+| `*.idx` | On-disk B-tree index (fixed 4096-byte pages)  |
 
----
-
-## Quick start
+### Quick start
 
 ```rust
-use rust_isam::Isam;
+use highlandcows::Isam;
 
 // Create a new database (pass any path prefix — extensions are added automatically)
 let mut db: Isam<String, u64> = Isam::create("/tmp/mydb")?;
@@ -64,9 +91,7 @@ db.compact()?;
 let mut db: Isam<String, u64> = Isam::open("/tmp/mydb")?;
 ```
 
----
-
-## API
+### API
 
 ```rust
 Isam::create(path) -> IsamResult<Self>
@@ -97,14 +122,33 @@ db.compact()            -> IsamResult<()>
 Requires Rust 1.70 or later. Install via [rustup](https://rustup.rs) if needed.
 
 ```sh
-# Build
+# Build all crates
 cargo build
 
-# Run tests
+# Run all tests
 cargo test
 
-# Build optimized release binary
+# Build optimized
 cargo build --release
+```
+
+---
+
+## Workspace structure
+
+```
+highlandcows/
+├── Cargo.toml                  # workspace root
+├── crates/
+│   ├── highlandcows/           # umbrella facade crate
+│   │   ├── Cargo.toml
+│   │   └── src/lib.rs
+│   └── isam/                   # highlandcows-isam implementation
+│       ├── Cargo.toml
+│       ├── src/
+│       └── tests/
+├── README.md
+└── LICENSE
 ```
 
 ---

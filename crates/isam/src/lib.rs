@@ -1,12 +1,12 @@
-//! # rust-isam
+//! # highlandcows-isam
 //!
 //! An ISAM (Indexed Sequential Access Method) library that stores records
 //! indexed by a user-supplied key type and persists them to local files.
 //!
 //! ## Quick start
 //!
-//! ```rust,no_run
-//! use rust_isam::Isam;
+//! ```rust,ignore
+//! use highlandcows::Isam;
 //!
 //! let mut db: Isam<String, String> = Isam::create("/tmp/mydb").unwrap();
 //! db.insert("hello".to_string(), &"world".to_string()).unwrap();
