@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target/
+
+# Cargo lock file (keep for binaries, omit for libraries)
+# Cargo.lock
+
+# Claude Code local settings
+.claude/
+
+# Editor / IDE files
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+
+# macOS metadata
+.DS_Store
+
+# ISAM database files (generated during tests / local use)
+*.idb
+*.idx
+*.idb.tmp
+*.idx.tmp
