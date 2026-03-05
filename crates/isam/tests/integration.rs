@@ -3,7 +3,7 @@
 /// `tempfile::TempDir` creates a temporary directory that is automatically
 /// deleted when the `TempDir` value is dropped (goes out of scope).
 /// This keeps tests hermetic — no leftover files between runs.
-use rust_isam::{IsamError, Isam};
+use highlandcows_isam::{IsamError, Isam};
 use tempfile::TempDir;
 
 /// Helper: open a fresh database in a temp dir.
