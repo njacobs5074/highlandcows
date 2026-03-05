@@ -1,5 +1,7 @@
 # rust-isam
 
+![Build & Tests](https://github.com/njacobs5074/rust-isam/actions/workflows/rust.yml/badge.svg?branch=master)
+
 A persistent ISAM (Indexed Sequential Access Method) library written in Rust. Records are stored on disk indexed by a user-supplied key type, with support for full CRUD operations, key-ordered iteration, and compaction.
 
 > **Created with [Claude Code](https://claude.ai/code) by Anthropic.**
