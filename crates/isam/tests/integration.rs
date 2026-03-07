@@ -244,91 +244,130 @@ fn test_byte_array_iter_sorted_order() {
     );
 }
 
-// ── Range search ───────────────────────────────────────────────────────── //
+// ── Min / max key ──────────────────────────────────────────────────────── //
 
 #[test]
-fn test_range_inclusive() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    for k in 1u32..=10 {
-        db.insert(k, &k.to_string()).unwrap();
-    }
-    let keys: Vec<u32> = db
-        .range(3u32..=7)
-        .unwrap()
-        .map(|r| r.unwrap().0)
-        .collect();
-    assert_eq!(keys, vec![3, 4, 5, 6, 7]);
+fn test_min_max_empty_db() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    assert_eq!(db.min_key().unwrap(), None);
+    assert_eq!(db.max_key().unwrap(), None);
 }
 
 #[test]
-fn test_range_exclusive() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    for k in 1u32..=10 {
-        db.insert(k, &k.to_string()).unwrap();
+fn test_min_max_single_entry() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    db.insert(42, &42).unwrap();
+    assert_eq!(db.min_key().unwrap(), Some(42));
+    assert_eq!(db.max_key().unwrap(), Some(42));
+}
+
+#[test]
+fn test_min_max_basic() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for k in [5u32, 2, 8, 1, 9, 3] {
+        db.insert(k, &k).unwrap();
     }
-    let keys: Vec<u32> = db
-        .range(3u32..7)
+    assert_eq!(db.min_key().unwrap(), Some(1));
+    assert_eq!(db.max_key().unwrap(), Some(9));
+}
+
+#[test]
+fn test_min_max_after_delete() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for k in 1..=5u32 {
+        db.insert(k, &k).unwrap();
+    }
+    db.delete(&1).unwrap();
+    db.delete(&5).unwrap();
+    assert_eq!(db.min_key().unwrap(), Some(2));
+    assert_eq!(db.max_key().unwrap(), Some(4));
+}
+
+#[test]
+fn test_min_max_across_page_boundary() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for k in 0..300u32 {
+        db.insert(k, &k).unwrap();
+    }
+    assert_eq!(db.min_key().unwrap(), Some(0));
+    assert_eq!(db.max_key().unwrap(), Some(299));
+}
+
+// ── Range search ───────────────────────────────────────────────────────── //
+
+/// Helper: insert keys 1..=20 and collect the keys returned by a range query.
+fn range_keys(db: &mut Isam<u32, u32>, bounds: impl std::ops::RangeBounds<u32>) -> Vec<u32> {
+    db.range(bounds)
         .unwrap()
         .map(|r| r.unwrap().0)
-        .collect();
-    assert_eq!(keys, vec![3, 4, 5, 6]);
+        .collect()
+}
+
+#[test]
+fn test_range_inclusive() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=20u32 {
+        db.insert(i, &i).unwrap();
+    }
+    assert_eq!(range_keys(&mut db, 5..=10), vec![5, 6, 7, 8, 9, 10]);
+}
+
+#[test]
+fn test_range_exclusive_end() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=20u32 {
+        db.insert(i, &i).unwrap();
+    }
+    assert_eq!(range_keys(&mut db, 5..10), vec![5, 6, 7, 8, 9]);
 }
 
 #[test]
 fn test_range_unbounded_start() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    for k in 1u32..=5 {
-        db.insert(k, &k.to_string()).unwrap();
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=20u32 {
+        db.insert(i, &i).unwrap();
     }
-    let keys: Vec<u32> = db
-        .range(..=3u32)
-        .unwrap()
-        .map(|r| r.unwrap().0)
-        .collect();
-    assert_eq!(keys, vec![1, 2, 3]);
+    assert_eq!(range_keys(&mut db, ..=5), vec![1, 2, 3, 4, 5]);
 }
 
 #[test]
 fn test_range_unbounded_end() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    for k in 1u32..=5 {
-        db.insert(k, &k.to_string()).unwrap();
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=20u32 {
+        db.insert(i, &i).unwrap();
     }
-    let keys: Vec<u32> = db
-        .range(3u32..)
-        .unwrap()
-        .map(|r| r.unwrap().0)
-        .collect();
-    assert_eq!(keys, vec![3, 4, 5]);
+    assert_eq!(range_keys(&mut db, 17..), vec![17, 18, 19, 20]);
+}
+
+#[test]
+fn test_range_full() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=10u32 {
+        db.insert(i, &i).unwrap();
+    }
+    assert_eq!(range_keys(&mut db, ..), (1..=10).collect::<Vec<_>>());
 }
 
 #[test]
 fn test_range_empty_result() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    for k in 1u32..=5 {
-        db.insert(k, &k.to_string()).unwrap();
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for i in 1..=20u32 {
+        db.insert(i, &i).unwrap();
     }
-    // Range [20, 30] — no keys exist there.
-    let keys: Vec<u32> = db
-        .range(20u32..=30)
-        .unwrap()
-        .map(|r| r.unwrap().0)
-        .collect();
-    assert!(keys.is_empty());
+    // Start > end → should yield nothing.
+    assert_eq!(range_keys(&mut db, 10..=5), vec![]);
 }
 
 #[test]
-fn test_range_across_page_split() {
+fn test_range_across_page_boundary() {
+    // Insert enough records to force multiple leaf pages, then do a range
+    // that must span more than one page.
     let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
-    for k in 0u32..300 {
-        db.insert(k, &k).unwrap();
+    for i in 0..300u32 {
+        db.insert(i, &i).unwrap();
     }
-    let keys: Vec<u32> = db
-        .range(100u32..=200)
-        .unwrap()
-        .map(|r| r.unwrap().0)
-        .collect();
-    assert_eq!(keys, (100u32..=200).collect::<Vec<_>>());
+    let keys = range_keys(&mut db, 100..=200);
+    assert_eq!(keys, (100..=200).collect::<Vec<_>>());
 }
 
 // ── Persistence ────────────────────────────────────────────────────────── //

@@ -88,6 +88,16 @@ where
         Ok(())
     }
 
+    /// Return the smallest key in the database, or `None` if it is empty.
+    pub fn min_key(&mut self) -> IsamResult<Option<K>> {
+        self.index.min_key()
+    }
+
+    /// Return the largest key in the database, or `None` if it is empty.
+    pub fn max_key(&mut self) -> IsamResult<Option<K>> {
+        self.index.max_key()
+    }
+
     pub fn iter(&mut self) -> IsamResult<IsamIter<'_, K, V>> {
         let first_id = self.index.first_leaf_id()?;
         let (entries, next_id) = if first_id != 0 {
@@ -259,19 +269,19 @@ where
 }
 
 // ───────────────────────────────────────────────────────────────────────── //
-//  RangeIter
+//  Range iterator
 // ───────────────────────────────────────────────────────────────────────── //
 
-/// Key-order iterator over records whose keys fall within a caller-supplied range.
+/// Key-order iterator over records whose key falls within a given range.
 ///
-/// Works like `IsamIter` but stops as soon as the current key exceeds the
-/// upper bound, avoiding a full sequential scan of the index.
+/// Created by [`Isam::range`].  Advances through the B-tree leaf chain,
+/// skipping entries before the start bound and stopping at the end bound.
 pub struct RangeIter<'a, K, V> {
     isam: &'a mut Isam<K, V>,
     buffer: Vec<(K, crate::store::RecordRef)>,
     buf_pos: usize,
     next_leaf_id: u32,
-    /// Upper bound of the range (inclusive or exclusive).
+    /// The upper bound of the range, stored as an owned value.
     end_bound: Bound<K>,
 }
 
@@ -286,18 +296,20 @@ where
         loop {
             if self.buf_pos < self.buffer.len() {
                 let (key, rec) = self.buffer[self.buf_pos].clone();
+                self.buf_pos += 1;
 
-                // Stop iteration if the current key exceeds the end bound.
-                let in_range = match &self.end_bound {
+                // Check whether this key is still within the end bound.
+                // If not, the range is exhausted — return None immediately.
+                let within = match &self.end_bound {
                     Bound::Included(end) => &key <= end,
                     Bound::Excluded(end) => &key < end,
                     Bound::Unbounded => true,
                 };
-                if !in_range {
+                if !within {
                     return None;
                 }
 
-                self.buf_pos += 1;
+
                 return Some(
                     self.isam
                         .store
@@ -306,7 +318,7 @@ where
                 );
             }
 
-            // Buffer exhausted — load the next leaf page if one exists.
+            // Buffer exhausted — load the next leaf page.
             if self.next_leaf_id == 0 {
                 return None;
             }
