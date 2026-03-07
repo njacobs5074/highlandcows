@@ -8,4 +8,4 @@
 //! |--------|-------------|
 //! | `highlandcows::Isam` | Persistent ISAM key/value store |
 
-pub use highlandcows_isam::{Isam, IsamError, IsamIter, IsamResult};
+pub use highlandcows_isam::{Isam, IsamError, IsamIter, IsamResult, RangeIter};
