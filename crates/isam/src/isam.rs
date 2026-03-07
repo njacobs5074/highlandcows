@@ -98,59 +98,6 @@ where
         self.index.max_key()
     }
 
-    /// Return an iterator over all records whose key falls within `bounds`.
-    ///
-    /// `RangeBounds` is a standard Rust trait implemented by all range
-    /// expressions, so callers can write:
-    /// ```ignore
-    /// db.range(3..=7)    // inclusive: keys 3, 4, 5, 6, 7
-    /// db.range(3..7)     // exclusive end: keys 3, 4, 5, 6
-    /// db.range(5..)      // unbounded end: keys >= 5
-    /// db.range(..=5)     // unbounded start: keys <= 5
-    /// db.range(..)       // all keys (same as iter())
-    /// ```
-    pub fn range(&mut self, bounds: impl RangeBounds<K>) -> IsamResult<RangeIter<'_, K, V>> {
-        // Clone the bounds into owned `Bound<K>` values so the iterator can
-        // own them without holding a reference to the caller's range expression.
-        let start = match bounds.start_bound() {
-            Bound::Included(k) => Bound::Included(k.clone()),
-            Bound::Excluded(k) => Bound::Excluded(k.clone()),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-        let end = match bounds.end_bound() {
-            Bound::Included(k) => Bound::Included(k.clone()),
-            Bound::Excluded(k) => Bound::Excluded(k.clone()),
-            Bound::Unbounded => Bound::Unbounded,
-        };
-
-        // Find the leaf page where the range begins.
-        let start_leaf_id = match &start {
-            Bound::Unbounded => self.index.first_leaf_id()?,
-            Bound::Included(k) | Bound::Excluded(k) => self.index.find_leaf_for_key(k)?,
-        };
-
-        let (entries, next_id) = if start_leaf_id != 0 {
-            self.index.read_leaf(start_leaf_id)?
-        } else {
-            (vec![], 0)
-        };
-
-        // Skip entries before the start bound within the first leaf.
-        let buf_pos = match &start {
-            Bound::Unbounded => 0,
-            Bound::Included(k) => entries.partition_point(|(ek, _)| ek < k),
-            Bound::Excluded(k) => entries.partition_point(|(ek, _)| ek <= k),
-        };
-
-        Ok(RangeIter {
-            isam: self,
-            buffer: entries,
-            buf_pos,
-            next_leaf_id: next_id,
-            end_bound: end,
-        })
-    }
-
     pub fn iter(&mut self) -> IsamResult<IsamIter<'_, K, V>> {
         let first_id = self.index.first_leaf_id()?;
         let (entries, next_id) = if first_id != 0 {
@@ -163,6 +110,56 @@ where
             buffer: entries,
             buf_pos: 0,
             next_leaf_id: next_id,
+        })
+    }
+
+    /// Return a key-ordered iterator over records whose keys fall within `range`.
+    ///
+    /// ## Example
+    /// ```rust,ignore
+    /// for result in db.range(3u32..=7).unwrap() {
+    ///     let (key, val) = result.unwrap();
+    /// }
+    /// ```
+    ///
+    /// `R: RangeBounds<K>` accepts any of Rust's built-in range expressions:
+    /// `a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`.
+    pub fn range<R>(&mut self, range: R) -> IsamResult<RangeIter<'_, K, V>>
+    where
+        R: RangeBounds<K>,
+    {
+        // Clone the bounds out of the range so we can store them in the iterator.
+        // `Bound<&K>` → `Bound<K>` via the helper below.
+        let start_bound = clone_bound(range.start_bound());
+        let end_bound = clone_bound(range.end_bound());
+
+        // Position the starting leaf using `find_leaf_for_key` when we have a
+        // concrete lower bound; otherwise fall back to the leftmost leaf.
+        let start_leaf_id = match &start_bound {
+            Bound::Included(k) | Bound::Excluded(k) => self.index.find_leaf_for_key(k)?,
+            Bound::Unbounded => self.index.first_leaf_id()?,
+        };
+
+        let (entries, next_leaf_id) = if start_leaf_id != 0 {
+            self.index.read_leaf(start_leaf_id)?
+        } else {
+            (vec![], 0)
+        };
+
+        // Trim entries that precede the start bound so the caller never sees
+        // keys that should be excluded.
+        let buf_pos = match &start_bound {
+            Bound::Included(k) => entries.partition_point(|(ek, _)| ek < k),
+            Bound::Excluded(k) => entries.partition_point(|(ek, _)| ek <= k),
+            Bound::Unbounded => 0,
+        };
+
+        Ok(RangeIter {
+            isam: self,
+            buffer: entries,
+            buf_pos,
+            next_leaf_id,
+            end_bound,
         })
     }
 
@@ -312,6 +309,7 @@ where
                     return None;
                 }
 
+
                 return Some(
                     self.isam
                         .store
@@ -347,4 +345,16 @@ fn idb_path(base: &Path) -> PathBuf {
 
 fn idx_path(base: &Path) -> PathBuf {
     base.with_extension("idx")
+}
+
+/// Convert a borrowed `Bound<&K>` into an owned `Bound<K>` by cloning.
+///
+/// `RangeBounds::start_bound()` and `end_bound()` hand back `Bound<&T>`;
+/// we need owned values to store inside `RangeIter`.
+fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
+    match b {
+        Bound::Included(k) => Bound::Included(k.clone()),
+        Bound::Excluded(k) => Bound::Excluded(k.clone()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
 }
