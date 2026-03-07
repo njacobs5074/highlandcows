@@ -28,4 +28,4 @@ pub mod store;
 
 // Re-export the main types at the crate root for convenience.
 pub use error::{IsamError, IsamResult};
-pub use isam::{Isam, IsamIter};
+pub use isam::{Isam, IsamIter, RangeIter};

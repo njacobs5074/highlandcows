@@ -14,6 +14,7 @@
 ///   `PhantomData<V>` to tell the Rust type checker that `IsamFile`
 ///   logically "contains" values of type `V`.
 use std::marker::PhantomData;
+use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -85,6 +86,69 @@ where
         self.index.delete(key)?;
         self.store.append_tombstone(key)?;
         Ok(())
+    }
+
+    /// Return the smallest key in the database, or `None` if it is empty.
+    pub fn min_key(&mut self) -> IsamResult<Option<K>> {
+        self.index.min_key()
+    }
+
+    /// Return the largest key in the database, or `None` if it is empty.
+    pub fn max_key(&mut self) -> IsamResult<Option<K>> {
+        self.index.max_key()
+    }
+
+    /// Return an iterator over all records whose key falls within `bounds`.
+    ///
+    /// `RangeBounds` is a standard Rust trait implemented by all range
+    /// expressions, so callers can write:
+    /// ```ignore
+    /// db.range(3..=7)    // inclusive: keys 3, 4, 5, 6, 7
+    /// db.range(3..7)     // exclusive end: keys 3, 4, 5, 6
+    /// db.range(5..)      // unbounded end: keys >= 5
+    /// db.range(..=5)     // unbounded start: keys <= 5
+    /// db.range(..)       // all keys (same as iter())
+    /// ```
+    pub fn range(&mut self, bounds: impl RangeBounds<K>) -> IsamResult<RangeIter<'_, K, V>> {
+        // Clone the bounds into owned `Bound<K>` values so the iterator can
+        // own them without holding a reference to the caller's range expression.
+        let start = match bounds.start_bound() {
+            Bound::Included(k) => Bound::Included(k.clone()),
+            Bound::Excluded(k) => Bound::Excluded(k.clone()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let end = match bounds.end_bound() {
+            Bound::Included(k) => Bound::Included(k.clone()),
+            Bound::Excluded(k) => Bound::Excluded(k.clone()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        // Find the leaf page where the range begins.
+        let start_leaf_id = match &start {
+            Bound::Unbounded => self.index.first_leaf_id()?,
+            Bound::Included(k) | Bound::Excluded(k) => self.index.find_leaf_for_key(k)?,
+        };
+
+        let (entries, next_id) = if start_leaf_id != 0 {
+            self.index.read_leaf(start_leaf_id)?
+        } else {
+            (vec![], 0)
+        };
+
+        // Skip entries before the start bound within the first leaf.
+        let buf_pos = match &start {
+            Bound::Unbounded => 0,
+            Bound::Included(k) => entries.partition_point(|(ek, _)| ek < k),
+            Bound::Excluded(k) => entries.partition_point(|(ek, _)| ek <= k),
+        };
+
+        Ok(RangeIter {
+            isam: self,
+            buffer: entries,
+            buf_pos,
+            next_leaf_id: next_id,
+            end_bound: end,
+        })
     }
 
     pub fn iter(&mut self) -> IsamResult<IsamIter<'_, K, V>> {
@@ -193,6 +257,72 @@ where
             // Buffer exhausted — load the next leaf page.
             if self.next_leaf_id == 0 {
                 return None; // end of the leaf chain
+            }
+
+            match self.isam.index.read_leaf(self.next_leaf_id) {
+                Ok((entries, next_id)) => {
+                    self.buffer = entries;
+                    self.buf_pos = 0;
+                    self.next_leaf_id = next_id;
+                }
+                Err(e) => return Some(Err(e)),
+            }
+        }
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────── //
+//  Range iterator
+// ───────────────────────────────────────────────────────────────────────── //
+
+/// Key-order iterator over records whose key falls within a given range.
+///
+/// Created by [`Isam::range`].  Advances through the B-tree leaf chain,
+/// skipping entries before the start bound and stopping at the end bound.
+pub struct RangeIter<'a, K, V> {
+    isam: &'a mut Isam<K, V>,
+    buffer: Vec<(K, crate::store::RecordRef)>,
+    buf_pos: usize,
+    next_leaf_id: u32,
+    /// The upper bound of the range, stored as an owned value.
+    end_bound: Bound<K>,
+}
+
+impl<'a, K, V> Iterator for RangeIter<'a, K, V>
+where
+    K: Serialize + DeserializeOwned + Ord + Clone,
+    V: Serialize + DeserializeOwned,
+{
+    type Item = IsamResult<(K, V)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if self.buf_pos < self.buffer.len() {
+                let (key, rec) = self.buffer[self.buf_pos].clone();
+                self.buf_pos += 1;
+
+                // Check whether this key is still within the end bound.
+                // If not, the range is exhausted — return None immediately.
+                let within = match &self.end_bound {
+                    Bound::Included(end) => &key <= end,
+                    Bound::Excluded(end) => &key < end,
+                    Bound::Unbounded => true,
+                };
+                if !within {
+                    return None;
+                }
+
+                return Some(
+                    self.isam
+                        .store
+                        .read_value(rec)
+                        .map(|value| (key, value)),
+                );
+            }
+
+            // Buffer exhausted — load the next leaf page.
+            if self.next_leaf_id == 0 {
+                return None;
             }
 
             match self.isam.index.read_leaf(self.next_leaf_id) {
