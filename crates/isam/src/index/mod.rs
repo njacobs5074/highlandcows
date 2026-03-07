@@ -202,6 +202,24 @@ const LEAF_HEADER: usize = 1 + 2 + 4; // type + num_entries + next_leaf_id
 const INTERNAL_HEADER: usize = 1 + 2 + 4; // type + num_keys + child_0
 
 // ───────────────────────────────────────────────────────────────────────── //
+//  Key comparison helper
+// ───────────────────────────────────────────────────────────────────────── //
+
+/// Compare two bincode-encoded keys using `K::Ord`.
+///
+/// Raw byte order diverges from `K::Ord` for types like `u32` when encoded
+/// little-endian (e.g. 256 encodes as `[0,1,0,0]`, which sorts before 1
+/// lexicographically but after it numerically).  Deserializing before
+/// comparing ensures the B-tree always respects the type's natural ordering.
+///
+/// Panics only if the bytes are corrupt — an internal invariant violation.
+fn cmp_key_bytes<K: DeserializeOwned + Ord>(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+    let ka: K = bincode::deserialize(a).expect("corrupt key bytes in index");
+    let kb: K = bincode::deserialize(b).expect("corrupt key bytes in index");
+    ka.cmp(&kb)
+}
+
+// ───────────────────────────────────────────────────────────────────────── //
 //  BTree
 // ───────────────────────────────────────────────────────────────────────── //
 
@@ -263,10 +281,10 @@ where
             return Err(IsamError::DuplicateKey);
         }
 
-        // Insert in sorted position.
+        // Insert in sorted position (use K::Ord, not raw byte order).
         let pos = leaf
             .entries
-            .partition_point(|e| e.key_bytes.as_slice() < key_bytes.as_slice());
+            .partition_point(|e| cmp_key_bytes::<K>(&e.key_bytes, &key_bytes).is_lt());
         leaf.entries.insert(
             pos,
             LeafEntry {
@@ -342,6 +360,19 @@ where
         self.leftmost_leaf(root_id)
     }
 
+    /// Return the id of the leaf page that would contain `key`.
+    ///
+    /// This is used to position a range iterator at the correct starting leaf
+    /// without scanning from the leftmost leaf.  The key itself may not be
+    /// present; what matters is that all keys ≥ `key` live in the returned
+    /// page or in a later page in the linked-list chain.
+    pub fn find_leaf_for_key(&mut self, key: &K) -> IsamResult<u32> {
+        let key_bytes = bincode::serialize(key)?;
+        let root_id = self.pager.meta.root_page_id;
+        let path = self.find_leaf_path(root_id, &key_bytes)?;
+        Ok(*path.last().unwrap())
+    }
+
     /// Read leaf page `id` and return its entries and `next_leaf_id`.
     pub fn read_leaf(&mut self, id: u32) -> IsamResult<(Vec<(K, RecordRef)>, u32)> {
         let data = self.pager.read_page(id)?;
@@ -397,9 +428,10 @@ where
         // children[i] holds all keys < keys[i].
         // We want the largest i such that keys[i-1] <= key_bytes,
         // or child[0] if key_bytes < keys[0].
+        // Use cmp_key_bytes so routing follows K::Ord, not raw byte order.
         let pos = page
             .key_bytes
-            .partition_point(|kb| kb.as_slice() <= key_bytes);
+            .partition_point(|kb| cmp_key_bytes::<K>(kb.as_slice(), key_bytes).is_le());
         page.children[pos]
     }
 
@@ -486,7 +518,7 @@ where
         leaf.entries.retain(|e| e.key_bytes != key_bytes);
         let pos = leaf
             .entries
-            .partition_point(|e| e.key_bytes.as_slice() < key_bytes);
+            .partition_point(|e| cmp_key_bytes::<K>(&e.key_bytes, key_bytes).is_lt());
         leaf.entries.insert(
             pos,
             LeafEntry {

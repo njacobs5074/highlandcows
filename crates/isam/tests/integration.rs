@@ -244,6 +244,93 @@ fn test_byte_array_iter_sorted_order() {
     );
 }
 
+// ── Range search ───────────────────────────────────────────────────────── //
+
+#[test]
+fn test_range_inclusive() {
+    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    for k in 1u32..=10 {
+        db.insert(k, &k.to_string()).unwrap();
+    }
+    let keys: Vec<u32> = db
+        .range(3u32..=7)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert_eq!(keys, vec![3, 4, 5, 6, 7]);
+}
+
+#[test]
+fn test_range_exclusive() {
+    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    for k in 1u32..=10 {
+        db.insert(k, &k.to_string()).unwrap();
+    }
+    let keys: Vec<u32> = db
+        .range(3u32..7)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert_eq!(keys, vec![3, 4, 5, 6]);
+}
+
+#[test]
+fn test_range_unbounded_start() {
+    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    for k in 1u32..=5 {
+        db.insert(k, &k.to_string()).unwrap();
+    }
+    let keys: Vec<u32> = db
+        .range(..=3u32)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert_eq!(keys, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_range_unbounded_end() {
+    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    for k in 1u32..=5 {
+        db.insert(k, &k.to_string()).unwrap();
+    }
+    let keys: Vec<u32> = db
+        .range(3u32..)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert_eq!(keys, vec![3, 4, 5]);
+}
+
+#[test]
+fn test_range_empty_result() {
+    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    for k in 1u32..=5 {
+        db.insert(k, &k.to_string()).unwrap();
+    }
+    // Range [20, 30] — no keys exist there.
+    let keys: Vec<u32> = db
+        .range(20u32..=30)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert!(keys.is_empty());
+}
+
+#[test]
+fn test_range_across_page_split() {
+    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    for k in 0u32..300 {
+        db.insert(k, &k).unwrap();
+    }
+    let keys: Vec<u32> = db
+        .range(100u32..=200)
+        .unwrap()
+        .map(|r| r.unwrap().0)
+        .collect();
+    assert_eq!(keys, (100u32..=200).collect::<Vec<_>>());
+}
+
 // ── Persistence ────────────────────────────────────────────────────────── //
 
 #[test]
