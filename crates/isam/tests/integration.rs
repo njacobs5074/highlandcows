@@ -370,6 +370,137 @@ fn test_range_across_page_boundary() {
     assert_eq!(keys, (100..=200).collect::<Vec<_>>());
 }
 
+// ── Schema versioning ──────────────────────────────────────────────────── //
+
+#[test]
+fn test_schema_version_defaults_to_zero() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    assert_eq!(db.key_schema_version(), 0);
+    assert_eq!(db.val_schema_version(), 0);
+}
+
+#[test]
+fn test_schema_versions_persist_across_reopen() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("schema_test");
+
+    {
+        let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
+        db.insert(1u32, &"42".to_string()).unwrap();
+        // migrate_values consumes db and returns the new typed db.
+        let db2: Isam<u32, u64> = db
+            .migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap_or(0)))
+            .unwrap();
+        drop(db2);
+    }
+
+    // Reopen and verify the version was persisted.
+    let db3: Isam<u32, u64> = Isam::open(&path).unwrap();
+    assert_eq!(db3.key_schema_version(), 0);
+    assert_eq!(db3.val_schema_version(), 1);
+}
+
+#[test]
+fn test_migrate_values() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("migrate_values");
+
+    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
+    db.insert(1u32, &"3".to_string()).unwrap();
+    db.insert(2u32, &"7".to_string()).unwrap();
+    db.insert(3u32, &"11".to_string()).unwrap();
+
+    // Migrate values: parse String → u64 (len of string).
+    let mut db2: Isam<u32, u64> = db
+        .migrate_values(1, |s: String| Ok(s.len() as u64))
+        .unwrap();
+
+    assert_eq!(db2.val_schema_version(), 1);
+    assert_eq!(db2.key_schema_version(), 0);
+    assert_eq!(db2.get(&1).unwrap(), Some(1u64)); // "3" has len 1
+    assert_eq!(db2.get(&2).unwrap(), Some(1u64)); // "7" has len 1
+    assert_eq!(db2.get(&3).unwrap(), Some(2u64)); // "11" has len 2
+}
+
+#[test]
+fn test_migrate_keys() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("migrate_keys");
+
+    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
+    db.insert(1u32, &"one".to_string()).unwrap();
+    db.insert(2u32, &"two".to_string()).unwrap();
+    db.insert(3u32, &"three".to_string()).unwrap();
+
+    // Migrate keys: u32 → String (format as decimal).
+    let mut db2: Isam<String, String> = db
+        .migrate_keys(1, |k: u32| Ok(format!("{k}")))
+        .unwrap();
+
+    assert_eq!(db2.key_schema_version(), 1);
+    assert_eq!(db2.val_schema_version(), 0);
+    assert_eq!(db2.get(&"1".to_string()).unwrap(), Some("one".to_string()));
+    assert_eq!(db2.get(&"2".to_string()).unwrap(), Some("two".to_string()));
+    assert_eq!(db2.get(&"3".to_string()).unwrap(), Some("three".to_string()));
+
+    // Keys should be in sorted String order ("1" < "2" < "3").
+    let keys: Vec<String> = db2.iter().unwrap().map(|r| r.unwrap().0).collect();
+    assert_eq!(keys, vec!["1".to_string(), "2".to_string(), "3".to_string()]);
+}
+
+#[test]
+fn test_migrate_keys_reorders_correctly() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("migrate_keys_reorder");
+
+    // Insert keys 1..=9 as u32; after formatting as String they sort
+    // lexicographically as "1","2",...,"9" which matches numeric order here.
+    // Use two-digit keys to get a non-trivial reorder: 10..=12 (numeric) →
+    // "10","11","12" (lex order differs if mixed with single-digit, but we
+    // test them alone so numeric and lex agree for this range).
+    // Instead, negate the keys: migrate u32 → i32 negated, so ordering flips.
+    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
+    for i in [1u32, 5, 3, 2, 4] {
+        db.insert(i, &format!("v{i}")).unwrap();
+    }
+
+    // Migrate: u32 k → format with zero-padding so "01" < "02" < ... in lex.
+    let mut db2: Isam<String, String> = db
+        .migrate_keys(2, |k: u32| Ok(format!("{k:02}")))
+        .unwrap();
+
+    let pairs: Vec<(String, String)> = db2.iter().unwrap().map(|r| r.unwrap()).collect();
+    assert_eq!(pairs[0], ("01".to_string(), "v1".to_string()));
+    assert_eq!(pairs[1], ("02".to_string(), "v2".to_string()));
+    assert_eq!(pairs[4], ("05".to_string(), "v5".to_string()));
+    assert_eq!(db2.key_schema_version(), 2);
+}
+
+#[test]
+fn test_migrate_values_then_keys() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("migrate_chain");
+
+    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
+    db.insert(10u32, &"hello".to_string()).unwrap();
+    db.insert(20u32, &"world".to_string()).unwrap();
+
+    // First migrate values: String → usize (length).
+    let db2: Isam<u32, usize> = db
+        .migrate_values(1, |s: String| Ok(s.len()))
+        .unwrap();
+
+    // Then migrate keys: u32 → String.
+    let mut db3: Isam<String, usize> = db2
+        .migrate_keys(1, |k: u32| Ok(format!("{k:04}")))
+        .unwrap();
+
+    assert_eq!(db3.key_schema_version(), 1);
+    assert_eq!(db3.val_schema_version(), 1);
+    assert_eq!(db3.get(&"0010".to_string()).unwrap(), Some(5usize)); // "hello".len()
+    assert_eq!(db3.get(&"0020".to_string()).unwrap(), Some(5usize)); // "world".len()
+}
+
 // ── Persistence ────────────────────────────────────────────────────────── //
 
 #[test]
