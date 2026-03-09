@@ -163,6 +163,127 @@ where
         })
     }
 
+    /// Return the key schema version stored in the index metadata.
+    pub fn key_schema_version(&self) -> u32 {
+        self.index.key_schema_version()
+    }
+
+    /// Return the value schema version stored in the index metadata.
+    pub fn val_schema_version(&self) -> u32 {
+        self.index.val_schema_version()
+    }
+
+    /// Rewrite every value through `f`, bump the val schema version, and
+    /// return a ready-to-use `Isam<K, V2>`.  Consumes `self`.
+    pub fn migrate_values<V2, F>(mut self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
+    where
+        V2: Serialize + DeserializeOwned,
+        F: FnMut(V) -> IsamResult<V2>,
+    {
+        let base_path = self.base_path.clone();
+        let key_schema_v = self.index.key_schema_version();
+
+        // Walk leaf chain, collect (key_bytes, V).
+        let mut records: Vec<(Vec<u8>, V)> = Vec::new();
+        let first_id = self.index.first_leaf_id()?;
+        let mut current_id = first_id;
+        while current_id != 0 {
+            let (entries, next_id) = self.index.read_leaf(current_id)?;
+            for (_, rec) in &entries {
+                let (_status, key_bytes, val_bytes) = self.store.read_record_raw(rec.offset)?;
+                let v: V = bincode::deserialize(&val_bytes)?;
+                records.push((key_bytes, v));
+            }
+            current_id = next_id;
+        }
+
+        // Apply f to each V → V2.
+        let mut transformed: Vec<(Vec<u8>, V2)> = Vec::with_capacity(records.len());
+        for (key_bytes, v) in records {
+            transformed.push((key_bytes, f(v)?));
+        }
+
+        // Write to temp files.
+        let tmp_idb = base_path.with_extension("idb.tmp");
+        let tmp_idx = base_path.with_extension("idx.tmp");
+
+        let mut new_store = DataStore::create(&tmp_idb)?;
+        let mut new_index: BTree<K> = BTree::create(&tmp_idx)?;
+        new_index.set_schema_versions(key_schema_v, new_val_version)?;
+
+        for (key_bytes, v2) in &transformed {
+            let val_bytes = bincode::serialize(v2)?;
+            let rec = new_store.write_raw_record(crate::store::STATUS_ALIVE, key_bytes, &val_bytes)?;
+            let key: K = bincode::deserialize(key_bytes)?;
+            new_index.insert(&key, rec)?;
+        }
+
+        new_store.flush()?;
+        new_index.flush()?;
+        drop(new_store);
+        drop(new_index);
+        drop(self);
+
+        std::fs::rename(&tmp_idb, idb_path(&base_path))?;
+        std::fs::rename(&tmp_idx, idx_path(&base_path))?;
+
+        Isam::<K, V2>::open(&base_path)
+    }
+
+    /// Rewrite every key through `f`, bump the key schema version, re-sort by
+    /// `K2::Ord`, rebuild the index, and return a ready-to-use `Isam<K2, V>`.
+    /// Consumes `self`.
+    pub fn migrate_keys<K2, F>(mut self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
+    where
+        K2: Serialize + DeserializeOwned + Ord + Clone,
+        F: FnMut(K) -> IsamResult<K2>,
+    {
+        let base_path = self.base_path.clone();
+        let val_schema_v = self.index.val_schema_version();
+
+        // Walk leaf chain, collect (K2, val_bytes).
+        let mut records: Vec<(K2, Vec<u8>)> = Vec::new();
+        let first_id = self.index.first_leaf_id()?;
+        let mut current_id = first_id;
+        while current_id != 0 {
+            let (entries, next_id) = self.index.read_leaf(current_id)?;
+            for (k, rec) in &entries {
+                let (_status, _key_bytes, val_bytes) = self.store.read_record_raw(rec.offset)?;
+                let k2 = f(k.clone())?;
+                records.push((k2, val_bytes));
+            }
+            current_id = next_id;
+        }
+
+        // Sort by K2::Ord so the index is built in correct order.
+        records.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+        // Write to temp files.
+        let tmp_idb = base_path.with_extension("idb.tmp");
+        let tmp_idx = base_path.with_extension("idx.tmp");
+
+        let mut new_store = DataStore::create(&tmp_idb)?;
+        let mut new_index: BTree<K2> = BTree::create(&tmp_idx)?;
+        new_index.set_schema_versions(new_key_version, val_schema_v)?;
+
+        for (k2, val_bytes) in &records {
+            let key_bytes = bincode::serialize(k2)?;
+            let rec = new_store.write_raw_record(crate::store::STATUS_ALIVE, &key_bytes, val_bytes)?;
+            new_index.insert(k2, rec)?;
+        }
+
+        new_store.flush()?;
+        new_index.flush()?;
+        drop(new_store);
+        drop(new_index);
+        drop(self);
+
+        std::fs::rename(&tmp_idb, idb_path(&base_path))?;
+        std::fs::rename(&tmp_idx, idx_path(&base_path))?;
+
+        Isam::<K2, V>::open(&base_path)
+    }
+
     pub fn compact(&mut self) -> IsamResult<()> {
         // Collect alive records in key order from the leaf chain.
         let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();

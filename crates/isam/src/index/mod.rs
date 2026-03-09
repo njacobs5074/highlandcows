@@ -394,6 +394,20 @@ where
         Ok((out, leaf.next_leaf_id))
     }
 
+    pub fn key_schema_version(&self) -> u32 {
+        self.pager.meta.key_schema_version
+    }
+
+    pub fn val_schema_version(&self) -> u32 {
+        self.pager.meta.val_schema_version
+    }
+
+    pub fn set_schema_versions(&mut self, key_v: u32, val_v: u32) -> IsamResult<()> {
+        self.pager.meta.key_schema_version = key_v;
+        self.pager.meta.val_schema_version = val_v;
+        self.pager.flush_meta()
+    }
+
     pub fn flush(&mut self) -> IsamResult<()> {
         self.pager.flush()
     }

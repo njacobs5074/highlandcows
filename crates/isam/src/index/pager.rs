@@ -26,6 +26,8 @@ pub const MAGIC: &[u8; 8] = b"ISAMIDX\0";
 pub struct IndexMeta {
     pub root_page_id: u32,
     pub page_count: u32,
+    pub key_schema_version: u32,
+    pub val_schema_version: u32,
 }
 
 pub struct Pager {
@@ -45,7 +47,7 @@ impl Pager {
             .open(path)?;
 
         // Write page 0 — metadata.
-        let meta_bytes = Self::encode_meta(1, 2); // root=1, 2 pages total
+        let meta_bytes = Self::encode_meta(1, 2, 0, 0); // root=1, 2 pages total, versions 0,0
         file.write_all(&meta_bytes)?;
 
         // Write page 1 — empty leaf root.
@@ -59,6 +61,8 @@ impl Pager {
             meta: IndexMeta {
                 root_page_id: 1,
                 page_count: 2,
+                key_schema_version: 0,
+                val_schema_version: 0,
             },
         })
     }
@@ -71,6 +75,8 @@ impl Pager {
             meta: IndexMeta {
                 root_page_id: 0,
                 page_count: 0,
+                key_schema_version: 0,
+                val_schema_version: 0,
             },
         };
         pager.read_meta()?;
@@ -134,12 +140,19 @@ impl Pager {
         }
         self.meta.root_page_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
         self.meta.page_count = u32::from_le_bytes(buf[16..20].try_into().unwrap());
+        self.meta.key_schema_version = u32::from_le_bytes(buf[20..24].try_into().unwrap());
+        self.meta.val_schema_version = u32::from_le_bytes(buf[24..28].try_into().unwrap());
         Ok(())
     }
 
     /// Write the current `self.meta` back to page 0.
     pub fn flush_meta(&mut self) -> IsamResult<()> {
-        let bytes = Self::encode_meta(self.meta.root_page_id, self.meta.page_count);
+        let bytes = Self::encode_meta(
+            self.meta.root_page_id,
+            self.meta.page_count,
+            self.meta.key_schema_version,
+            self.meta.val_schema_version,
+        );
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&bytes)?;
         Ok(())
@@ -155,13 +168,15 @@ impl Pager {
     //  Static encoding helpers
     // ------------------------------------------------------------------ //
 
-    fn encode_meta(root_page_id: u32, page_count: u32) -> Vec<u8> {
+    fn encode_meta(root_page_id: u32, page_count: u32, key_schema_version: u32, val_schema_version: u32) -> Vec<u8> {
         let mut buf = vec![0u8; PAGE_SIZE];
         buf[0..8].copy_from_slice(MAGIC);
         let page_size = PAGE_SIZE as u32;
         buf[8..12].copy_from_slice(&page_size.to_le_bytes());
         buf[12..16].copy_from_slice(&root_page_id.to_le_bytes());
         buf[16..20].copy_from_slice(&page_count.to_le_bytes());
+        buf[20..24].copy_from_slice(&key_schema_version.to_le_bytes());
+        buf[24..28].copy_from_slice(&val_schema_version.to_le_bytes());
         buf
     }
 
