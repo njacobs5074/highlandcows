@@ -28,6 +28,10 @@ pub enum IsamError {
     /// The index file is corrupt or was created by an incompatible version.
     #[error("index file is corrupt: {0}")]
     CorruptIndex(String),
+
+    /// A thread panicked while holding the database lock.
+    #[error("mutex poisoned: a thread panicked while holding the database lock")]
+    LockPoisoned,
 }
 
 /// Convenience alias — every fallible function in this crate returns this.

@@ -1,8 +1,10 @@
-/// Integration tests for rust-isam.
+/// Integration tests for highlandcows-isam.
 ///
-/// `tempfile::TempDir` creates a temporary directory that is automatically
-/// deleted when the `TempDir` value is dropped (goes out of scope).
-/// This keeps tests hermetic — no leftover files between runs.
+/// All tests use the transactional API:
+///   let db = Isam::create(path)?;
+///   let mut txn = db.begin_transaction()?;
+///   db.insert(&mut txn, key, &val)?;
+///   txn.commit()?;
 use highlandcows_isam::{IsamError, Isam};
 use tempfile::TempDir;
 
@@ -15,75 +17,87 @@ where
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test");
     let db = Isam::create(&path).unwrap();
-    (dir, db) // return dir so it isn't dropped (and deleted) early
+    (dir, db)
 }
 
 // ── Basic CRUD ─────────────────────────────────────────────────────────── //
 
 #[test]
 fn test_insert_and_get() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(1, &"hello".to_string()).unwrap();
-    assert_eq!(db.get(&1).unwrap(), Some("hello".to_string()));
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &"hello".to_string()).unwrap();
+    assert_eq!(db.get(&mut txn, &1).unwrap(), Some("hello".to_string()));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_update() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(42, &"old".to_string()).unwrap();
-    db.update(42, &"new".to_string()).unwrap();
-    assert_eq!(db.get(&42).unwrap(), Some("new".to_string()));
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 42, &"old".to_string()).unwrap();
+    db.update(&mut txn, 42, &"new".to_string()).unwrap();
+    assert_eq!(db.get(&mut txn, &42).unwrap(), Some("new".to_string()));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_delete() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(7, &"bye".to_string()).unwrap();
-    db.delete(&7).unwrap();
-    assert_eq!(db.get(&7).unwrap(), None);
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 7, &"bye".to_string()).unwrap();
+    db.delete(&mut txn, &7).unwrap();
+    assert_eq!(db.get(&mut txn, &7).unwrap(), None);
+    txn.commit().unwrap();
 }
 
 // ── Edge cases ─────────────────────────────────────────────────────────── //
 
 #[test]
 fn test_get_missing_key_returns_none() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(1, &"one".to_string()).unwrap();
-    db.insert(2, &"two".to_string()).unwrap();
-    db.insert(3, &"three".to_string()).unwrap();
-    assert_eq!(db.get(&999).unwrap(), None);
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &"one".to_string()).unwrap();
+    db.insert(&mut txn, 2, &"two".to_string()).unwrap();
+    db.insert(&mut txn, 3, &"three".to_string()).unwrap();
+    assert_eq!(db.get(&mut txn, &999).unwrap(), None);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_update_missing_key_returns_err() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(1, &"one".to_string()).unwrap();
-    db.insert(2, &"two".to_string()).unwrap();
-    db.insert(3, &"three".to_string()).unwrap();
-    let err = db.update(999, &"x".to_string()).unwrap_err();
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &"one".to_string()).unwrap();
+    db.insert(&mut txn, 2, &"two".to_string()).unwrap();
+    db.insert(&mut txn, 3, &"three".to_string()).unwrap();
+    let err = db.update(&mut txn, 999, &"x".to_string()).unwrap_err();
     assert!(matches!(err, IsamError::KeyNotFound));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_insert_duplicate_key_returns_err() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    db.insert(1, &"first".to_string()).unwrap();
-    let err = db.insert(1, &"second".to_string()).unwrap_err();
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &"first".to_string()).unwrap();
+    let err = db.insert(&mut txn, 1, &"second".to_string()).unwrap_err();
     assert!(matches!(err, IsamError::DuplicateKey));
+    txn.commit().unwrap();
 }
 
 // ── Sequential access ──────────────────────────────────────────────────── //
 
 #[test]
 fn test_iter_returns_keys_in_sorted_order() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
-    // Insert out of order intentionally.
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for k in [5u32, 2, 8, 1, 9, 3, 7, 4, 6] {
-        db.insert(k, &k.to_string()).unwrap();
+        db.insert(&mut txn, k, &k.to_string()).unwrap();
     }
 
     let pairs: Vec<(u32, String)> = db
-        .iter()
+        .iter(&mut txn)
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -93,59 +107,62 @@ fn test_iter_returns_keys_in_sorted_order() {
     sorted.sort();
     assert_eq!(keys, sorted);
     assert_eq!(keys, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    txn.commit().unwrap();
 }
 
 // ── B-tree structure ───────────────────────────────────────────────────── //
 
-/// Force a page split by inserting more entries than fit in one 4096-byte page.
-///
-/// Each entry with a u32 key takes roughly 2 + 4 + 8 + 4 = 18 bytes in the
-/// leaf page, so ~200 entries should be enough to exceed the page and trigger
-/// a split.
 #[test]
 fn test_btree_forces_page_split() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 0..300u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    // Verify all records are still readable after splits.
     for i in 0..300u32 {
-        assert_eq!(db.get(&i).unwrap(), Some(i));
+        assert_eq!(db.get(&mut txn, &i).unwrap(), Some(i));
     }
+    txn.commit().unwrap();
 }
 
-/// Insert many entries then delete most of them to trigger leaf merges.
 #[test]
 fn test_btree_forces_merge_after_delete() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 0..200u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    // Delete all but a few.
     for i in 10..200u32 {
-        db.delete(&i).unwrap();
+        db.delete(&mut txn, &i).unwrap();
     }
-    // Remaining keys must still be accessible.
     for i in 0..10u32 {
-        assert_eq!(db.get(&i).unwrap(), Some(i));
+        assert_eq!(db.get(&mut txn, &i).unwrap(), Some(i));
     }
-    // Deleted keys must be gone.
     for i in 10..200u32 {
-        assert_eq!(db.get(&i).unwrap(), None);
+        assert_eq!(db.get(&mut txn, &i).unwrap(), None);
     }
+    txn.commit().unwrap();
 }
 
 // ── Compaction ─────────────────────────────────────────────────────────── //
 
 #[test]
 fn test_compact_removes_tombstones() {
-    let (dir, mut db): (_, Isam<u32, String>) = make_db();
+    let (dir, db): (_, Isam<u32, String>) = make_db();
 
-    for i in 0..20u32 {
-        db.insert(i, &format!("v{i}")).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        for i in 0..20u32 {
+            db.insert(&mut txn, i, &format!("v{i}")).unwrap();
+        }
+        txn.commit().unwrap();
     }
-    for i in 0..10u32 {
-        db.delete(&i).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        for i in 0..10u32 {
+            db.delete(&mut txn, &i).unwrap();
+        }
+        txn.commit().unwrap();
     }
 
     let idb_before = std::fs::metadata(dir.path().join("test.idb"))
@@ -158,7 +175,6 @@ fn test_compact_removes_tombstones() {
         .unwrap()
         .len();
 
-    // The compacted file should be smaller (tombstones removed, stale copies gone).
     assert!(
         idb_after < idb_before,
         "expected idb_after ({idb_after}) < idb_before ({idb_before})"
@@ -167,72 +183,87 @@ fn test_compact_removes_tombstones() {
 
 #[test]
 fn test_compact_preserves_all_alive_records() {
-    let (_dir, mut db): (_, Isam<u32, String>) = make_db();
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
 
-    for i in 0..50u32 {
-        db.insert(i, &format!("value_{i}")).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        for i in 0..50u32 {
+            db.insert(&mut txn, i, &format!("value_{i}")).unwrap();
+        }
+        txn.commit().unwrap();
     }
-    for i in (0..50u32).step_by(2) {
-        db.delete(&i).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        for i in (0..50u32).step_by(2) {
+            db.delete(&mut txn, &i).unwrap();
+        }
+        txn.commit().unwrap();
     }
 
     db.compact().unwrap();
 
-    // Odd keys alive, even keys gone.
+    let mut txn = db.begin_transaction().unwrap();
     for i in 0..50u32 {
-        let got = db.get(&i).unwrap();
+        let got = db.get(&mut txn, &i).unwrap();
         if i % 2 == 0 {
             assert_eq!(got, None, "key {i} should be gone");
         } else {
             assert_eq!(got, Some(format!("value_{i}")), "key {i} should survive");
         }
     }
+    txn.commit().unwrap();
 }
 
 // ── Byte array keys and values ─────────────────────────────────────────── //
 
 #[test]
 fn test_byte_array_insert_and_get() {
-    let (_dir, mut db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let (_dir, db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     let key = b"hello".to_vec();
     let val = b"world".to_vec();
-    db.insert(key.clone(), &val).unwrap();
-    assert_eq!(db.get(&key).unwrap(), Some(val));
+    db.insert(&mut txn, key.clone(), &val).unwrap();
+    assert_eq!(db.get(&mut txn, &key).unwrap(), Some(val));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_byte_array_update() {
-    let (_dir, mut db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let (_dir, db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     let key = b"key".to_vec();
-    db.insert(key.clone(), &b"old".to_vec()).unwrap();
-    db.update(key.clone(), &b"new".to_vec()).unwrap();
-    assert_eq!(db.get(&key).unwrap(), Some(b"new".to_vec()));
+    db.insert(&mut txn, key.clone(), &b"old".to_vec()).unwrap();
+    db.update(&mut txn, key.clone(), &b"new".to_vec()).unwrap();
+    assert_eq!(db.get(&mut txn, &key).unwrap(), Some(b"new".to_vec()));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_byte_array_delete() {
-    let (_dir, mut db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let (_dir, db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     let key = b"gone".to_vec();
-    db.insert(key.clone(), &b"value".to_vec()).unwrap();
-    db.delete(&key).unwrap();
-    assert_eq!(db.get(&key).unwrap(), None);
+    db.insert(&mut txn, key.clone(), &b"value".to_vec()).unwrap();
+    db.delete(&mut txn, &key).unwrap();
+    assert_eq!(db.get(&mut txn, &key).unwrap(), None);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_byte_array_iter_sorted_order() {
-    let (_dir, mut db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
-    // Insert several byte-array keys out of lexicographic order.
+    let (_dir, db): (_, Isam<Vec<u8>, Vec<u8>>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     let entries: Vec<(&[u8], &[u8])> = vec![
         (b"banana", b"2"),
         (b"apple", b"1"),
         (b"cherry", b"3"),
     ];
     for (k, v) in &entries {
-        db.insert(k.to_vec(), &v.to_vec()).unwrap();
+        db.insert(&mut txn, k.to_vec(), &v.to_vec()).unwrap();
     }
 
     let pairs: Vec<(Vec<u8>, Vec<u8>)> = db
-        .iter()
+        .iter(&mut txn)
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
@@ -242,62 +273,72 @@ fn test_byte_array_iter_sorted_order() {
         keys,
         vec![b"apple".to_vec(), b"banana".to_vec(), b"cherry".to_vec()]
     );
+    txn.commit().unwrap();
 }
 
 // ── Min / max key ──────────────────────────────────────────────────────── //
 
 #[test]
 fn test_min_max_empty_db() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
-    assert_eq!(db.min_key().unwrap(), None);
-    assert_eq!(db.max_key().unwrap(), None);
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.min_key(&mut txn).unwrap(), None);
+    assert_eq!(db.max_key(&mut txn).unwrap(), None);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_min_max_single_entry() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
-    db.insert(42, &42).unwrap();
-    assert_eq!(db.min_key().unwrap(), Some(42));
-    assert_eq!(db.max_key().unwrap(), Some(42));
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 42, &42).unwrap();
+    assert_eq!(db.min_key(&mut txn).unwrap(), Some(42));
+    assert_eq!(db.max_key(&mut txn).unwrap(), Some(42));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_min_max_basic() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for k in [5u32, 2, 8, 1, 9, 3] {
-        db.insert(k, &k).unwrap();
+        db.insert(&mut txn, k, &k).unwrap();
     }
-    assert_eq!(db.min_key().unwrap(), Some(1));
-    assert_eq!(db.max_key().unwrap(), Some(9));
+    assert_eq!(db.min_key(&mut txn).unwrap(), Some(1));
+    assert_eq!(db.max_key(&mut txn).unwrap(), Some(9));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_min_max_after_delete() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for k in 1..=5u32 {
-        db.insert(k, &k).unwrap();
+        db.insert(&mut txn, k, &k).unwrap();
     }
-    db.delete(&1).unwrap();
-    db.delete(&5).unwrap();
-    assert_eq!(db.min_key().unwrap(), Some(2));
-    assert_eq!(db.max_key().unwrap(), Some(4));
+    db.delete(&mut txn, &1).unwrap();
+    db.delete(&mut txn, &5).unwrap();
+    assert_eq!(db.min_key(&mut txn).unwrap(), Some(2));
+    assert_eq!(db.max_key(&mut txn).unwrap(), Some(4));
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_min_max_across_page_boundary() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for k in 0..300u32 {
-        db.insert(k, &k).unwrap();
+        db.insert(&mut txn, k, &k).unwrap();
     }
-    assert_eq!(db.min_key().unwrap(), Some(0));
-    assert_eq!(db.max_key().unwrap(), Some(299));
+    assert_eq!(db.min_key(&mut txn).unwrap(), Some(0));
+    assert_eq!(db.max_key(&mut txn).unwrap(), Some(299));
+    txn.commit().unwrap();
 }
 
 // ── Range search ───────────────────────────────────────────────────────── //
 
-/// Helper: insert keys 1..=20 and collect the keys returned by a range query.
-fn range_keys(db: &mut Isam<u32, u32>, bounds: impl std::ops::RangeBounds<u32>) -> Vec<u32> {
-    db.range(bounds)
+fn range_keys(db: &Isam<u32, u32>, txn: &mut highlandcows_isam::Transaction<'_, u32, u32>, bounds: impl std::ops::RangeBounds<u32>) -> Vec<u32> {
+    db.range(txn, bounds)
         .unwrap()
         .map(|r| r.unwrap().0)
         .collect()
@@ -305,69 +346,80 @@ fn range_keys(db: &mut Isam<u32, u32>, bounds: impl std::ops::RangeBounds<u32>) 
 
 #[test]
 fn test_range_inclusive() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=20u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    assert_eq!(range_keys(&mut db, 5..=10), vec![5, 6, 7, 8, 9, 10]);
+    assert_eq!(range_keys(&db, &mut txn, 5..=10), vec![5, 6, 7, 8, 9, 10]);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_exclusive_end() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=20u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    assert_eq!(range_keys(&mut db, 5..10), vec![5, 6, 7, 8, 9]);
+    assert_eq!(range_keys(&db, &mut txn, 5..10), vec![5, 6, 7, 8, 9]);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_unbounded_start() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=20u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    assert_eq!(range_keys(&mut db, ..=5), vec![1, 2, 3, 4, 5]);
+    assert_eq!(range_keys(&db, &mut txn, ..=5), vec![1, 2, 3, 4, 5]);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_unbounded_end() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=20u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    assert_eq!(range_keys(&mut db, 17..), vec![17, 18, 19, 20]);
+    assert_eq!(range_keys(&db, &mut txn, 17..), vec![17, 18, 19, 20]);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_full() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=10u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    assert_eq!(range_keys(&mut db, ..), (1..=10).collect::<Vec<_>>());
+    assert_eq!(range_keys(&db, &mut txn, ..), (1..=10).collect::<Vec<_>>());
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_empty_result() {
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 1..=20u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    // Start > end → should yield nothing.
-    assert_eq!(range_keys(&mut db, 10..=5), vec![]);
+    assert_eq!(range_keys(&db, &mut txn, 10..=5), vec![]);
+    txn.commit().unwrap();
 }
 
 #[test]
 fn test_range_across_page_boundary() {
-    // Insert enough records to force multiple leaf pages, then do a range
-    // that must span more than one page.
-    let (_dir, mut db): (_, Isam<u32, u32>) = make_db();
+    let (_dir, db): (_, Isam<u32, u32>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
     for i in 0..300u32 {
-        db.insert(i, &i).unwrap();
+        db.insert(&mut txn, i, &i).unwrap();
     }
-    let keys = range_keys(&mut db, 100..=200);
+    let keys = range_keys(&db, &mut txn, 100..=200);
     assert_eq!(keys, (100..=200).collect::<Vec<_>>());
+    txn.commit().unwrap();
 }
 
 // ── Schema versioning ──────────────────────────────────────────────────── //
@@ -375,8 +427,8 @@ fn test_range_across_page_boundary() {
 #[test]
 fn test_schema_version_defaults_to_zero() {
     let (_dir, db): (_, Isam<u32, String>) = make_db();
-    assert_eq!(db.key_schema_version(), 0);
-    assert_eq!(db.val_schema_version(), 0);
+    assert_eq!(db.key_schema_version().unwrap(), 0);
+    assert_eq!(db.val_schema_version().unwrap(), 0);
 }
 
 #[test]
@@ -385,8 +437,10 @@ fn test_schema_versions_persist_across_reopen() {
     let path = dir.path().join("schema_test");
 
     {
-        let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
-        db.insert(1u32, &"42".to_string()).unwrap();
+        let db: Isam<u32, String> = Isam::create(&path).unwrap();
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1u32, &"42".to_string()).unwrap();
+        txn.commit().unwrap();
         // migrate_values consumes db and returns the new typed db.
         let db2: Isam<u32, u64> = db
             .migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap_or(0)))
@@ -394,10 +448,9 @@ fn test_schema_versions_persist_across_reopen() {
         drop(db2);
     }
 
-    // Reopen and verify the version was persisted.
     let db3: Isam<u32, u64> = Isam::open(&path).unwrap();
-    assert_eq!(db3.key_schema_version(), 0);
-    assert_eq!(db3.val_schema_version(), 1);
+    assert_eq!(db3.key_schema_version().unwrap(), 0);
+    assert_eq!(db3.val_schema_version().unwrap(), 1);
 }
 
 #[test]
@@ -405,21 +458,26 @@ fn test_migrate_values() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("migrate_values");
 
-    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
-    db.insert(1u32, &"3".to_string()).unwrap();
-    db.insert(2u32, &"7".to_string()).unwrap();
-    db.insert(3u32, &"11".to_string()).unwrap();
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1u32, &"3".to_string()).unwrap();
+        db.insert(&mut txn, 2u32, &"7".to_string()).unwrap();
+        db.insert(&mut txn, 3u32, &"11".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
 
-    // Migrate values: parse String → u64 (len of string).
-    let mut db2: Isam<u32, u64> = db
+    let db2: Isam<u32, u64> = db
         .migrate_values(1, |s: String| Ok(s.len() as u64))
         .unwrap();
 
-    assert_eq!(db2.val_schema_version(), 1);
-    assert_eq!(db2.key_schema_version(), 0);
-    assert_eq!(db2.get(&1).unwrap(), Some(1u64)); // "3" has len 1
-    assert_eq!(db2.get(&2).unwrap(), Some(1u64)); // "7" has len 1
-    assert_eq!(db2.get(&3).unwrap(), Some(2u64)); // "11" has len 2
+    assert_eq!(db2.val_schema_version().unwrap(), 1);
+    assert_eq!(db2.key_schema_version().unwrap(), 0);
+    let mut txn = db2.begin_transaction().unwrap();
+    assert_eq!(db2.get(&mut txn, &1).unwrap(), Some(1u64));
+    assert_eq!(db2.get(&mut txn, &2).unwrap(), Some(1u64));
+    assert_eq!(db2.get(&mut txn, &3).unwrap(), Some(2u64));
+    txn.commit().unwrap();
 }
 
 #[test]
@@ -427,25 +485,29 @@ fn test_migrate_keys() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("migrate_keys");
 
-    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
-    db.insert(1u32, &"one".to_string()).unwrap();
-    db.insert(2u32, &"two".to_string()).unwrap();
-    db.insert(3u32, &"three".to_string()).unwrap();
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1u32, &"one".to_string()).unwrap();
+        db.insert(&mut txn, 2u32, &"two".to_string()).unwrap();
+        db.insert(&mut txn, 3u32, &"three".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
 
-    // Migrate keys: u32 → String (format as decimal).
-    let mut db2: Isam<String, String> = db
+    let db2: Isam<String, String> = db
         .migrate_keys(1, |k: u32| Ok(format!("{k}")))
         .unwrap();
 
-    assert_eq!(db2.key_schema_version(), 1);
-    assert_eq!(db2.val_schema_version(), 0);
-    assert_eq!(db2.get(&"1".to_string()).unwrap(), Some("one".to_string()));
-    assert_eq!(db2.get(&"2".to_string()).unwrap(), Some("two".to_string()));
-    assert_eq!(db2.get(&"3".to_string()).unwrap(), Some("three".to_string()));
+    assert_eq!(db2.key_schema_version().unwrap(), 1);
+    assert_eq!(db2.val_schema_version().unwrap(), 0);
+    let mut txn = db2.begin_transaction().unwrap();
+    assert_eq!(db2.get(&mut txn, &"1".to_string()).unwrap(), Some("one".to_string()));
+    assert_eq!(db2.get(&mut txn, &"2".to_string()).unwrap(), Some("two".to_string()));
+    assert_eq!(db2.get(&mut txn, &"3".to_string()).unwrap(), Some("three".to_string()));
 
-    // Keys should be in sorted String order ("1" < "2" < "3").
-    let keys: Vec<String> = db2.iter().unwrap().map(|r| r.unwrap().0).collect();
+    let keys: Vec<String> = db2.iter(&mut txn).unwrap().map(|r| r.unwrap().0).collect();
     assert_eq!(keys, vec!["1".to_string(), "2".to_string(), "3".to_string()]);
+    txn.commit().unwrap();
 }
 
 #[test]
@@ -453,27 +515,28 @@ fn test_migrate_keys_reorders_correctly() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("migrate_keys_reorder");
 
-    // Insert keys 1..=9 as u32; after formatting as String they sort
-    // lexicographically as "1","2",...,"9" which matches numeric order here.
-    // Use two-digit keys to get a non-trivial reorder: 10..=12 (numeric) →
-    // "10","11","12" (lex order differs if mixed with single-digit, but we
-    // test them alone so numeric and lex agree for this range).
-    // Instead, negate the keys: migrate u32 → i32 negated, so ordering flips.
-    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
-    for i in [1u32, 5, 3, 2, 4] {
-        db.insert(i, &format!("v{i}")).unwrap();
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        for i in [1u32, 5, 3, 2, 4] {
+            db.insert(&mut txn, i, &format!("v{i}")).unwrap();
+        }
+        txn.commit().unwrap();
     }
 
-    // Migrate: u32 k → format with zero-padding so "01" < "02" < ... in lex.
-    let mut db2: Isam<String, String> = db
+    let db2: Isam<String, String> = db
         .migrate_keys(2, |k: u32| Ok(format!("{k:02}")))
         .unwrap();
 
-    let pairs: Vec<(String, String)> = db2.iter().unwrap().map(|r| r.unwrap()).collect();
+    // Check version before beginning the transaction (would deadlock inside txn).
+    assert_eq!(db2.key_schema_version().unwrap(), 2);
+
+    let mut txn = db2.begin_transaction().unwrap();
+    let pairs: Vec<(String, String)> = db2.iter(&mut txn).unwrap().map(|r| r.unwrap()).collect();
     assert_eq!(pairs[0], ("01".to_string(), "v1".to_string()));
     assert_eq!(pairs[1], ("02".to_string(), "v2".to_string()));
     assert_eq!(pairs[4], ("05".to_string(), "v5".to_string()));
-    assert_eq!(db2.key_schema_version(), 2);
+    txn.commit().unwrap();
 }
 
 #[test]
@@ -481,24 +544,28 @@ fn test_migrate_values_then_keys() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("migrate_chain");
 
-    let mut db: Isam<u32, String> = Isam::create(&path).unwrap();
-    db.insert(10u32, &"hello".to_string()).unwrap();
-    db.insert(20u32, &"world".to_string()).unwrap();
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 10u32, &"hello".to_string()).unwrap();
+        db.insert(&mut txn, 20u32, &"world".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
 
-    // First migrate values: String → usize (length).
     let db2: Isam<u32, usize> = db
         .migrate_values(1, |s: String| Ok(s.len()))
         .unwrap();
 
-    // Then migrate keys: u32 → String.
-    let mut db3: Isam<String, usize> = db2
+    let db3: Isam<String, usize> = db2
         .migrate_keys(1, |k: u32| Ok(format!("{k:04}")))
         .unwrap();
 
-    assert_eq!(db3.key_schema_version(), 1);
-    assert_eq!(db3.val_schema_version(), 1);
-    assert_eq!(db3.get(&"0010".to_string()).unwrap(), Some(5usize)); // "hello".len()
-    assert_eq!(db3.get(&"0020".to_string()).unwrap(), Some(5usize)); // "world".len()
+    assert_eq!(db3.key_schema_version().unwrap(), 1);
+    assert_eq!(db3.val_schema_version().unwrap(), 1);
+    let mut txn = db3.begin_transaction().unwrap();
+    assert_eq!(db3.get(&mut txn, &"0010".to_string()).unwrap(), Some(5usize));
+    assert_eq!(db3.get(&mut txn, &"0020".to_string()).unwrap(), Some(5usize));
+    txn.commit().unwrap();
 }
 
 // ── Persistence ────────────────────────────────────────────────────────── //
@@ -509,18 +576,196 @@ fn test_data_survives_reopen() {
     let path = dir.path().join("persist");
 
     {
-        let mut db: Isam<String, u64> = Isam::create(&path).unwrap();
-        db.insert("alpha".to_string(), &100).unwrap();
-        db.insert("beta".to_string(), &200).unwrap();
-        db.insert("gamma".to_string(), &300).unwrap();
-        // db is dropped here, closing the files.
+        let db: Isam<String, u64> = Isam::create(&path).unwrap();
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, "alpha".to_string(), &100).unwrap();
+        db.insert(&mut txn, "beta".to_string(), &200).unwrap();
+        db.insert(&mut txn, "gamma".to_string(), &300).unwrap();
+        txn.commit().unwrap();
     }
 
     {
-        let mut db: Isam<String, u64> = Isam::open(&path).unwrap();
-        assert_eq!(db.get(&"alpha".to_string()).unwrap(), Some(100));
-        assert_eq!(db.get(&"beta".to_string()).unwrap(), Some(200));
-        assert_eq!(db.get(&"gamma".to_string()).unwrap(), Some(300));
-        assert_eq!(db.get(&"delta".to_string()).unwrap(), None);
+        let db: Isam<String, u64> = Isam::open(&path).unwrap();
+        let mut txn = db.begin_transaction().unwrap();
+        assert_eq!(db.get(&mut txn, &"alpha".to_string()).unwrap(), Some(100));
+        assert_eq!(db.get(&mut txn, &"beta".to_string()).unwrap(), Some(200));
+        assert_eq!(db.get(&mut txn, &"gamma".to_string()).unwrap(), Some(300));
+        assert_eq!(db.get(&mut txn, &"delta".to_string()).unwrap(), None);
+        txn.commit().unwrap();
     }
+}
+
+// ── Transaction semantics ─────────────────────────────────────────────── //
+
+#[test]
+fn test_transaction_commit() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("txn_commit");
+
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1, &"committed".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    // Reopen and verify persistence.
+    let db2: Isam<u32, String> = Isam::open(&path).unwrap();
+    let mut txn = db2.begin_transaction().unwrap();
+    assert_eq!(db2.get(&mut txn, &1).unwrap(), Some("committed".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_auto_rollback_on_drop() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 42, &"should_disappear".to_string()).unwrap();
+        // drop without commit → auto rollback
+    }
+
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn, &42).unwrap(), None);
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_explicit_rollback() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 10, &"gone".to_string()).unwrap();
+    txn.rollback().unwrap();
+
+    let mut txn2 = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn2, &10).unwrap(), None);
+    txn2.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_partial_failure_rolls_back_all() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    // Pre-insert key 2 so duplicate insert inside txn fails.
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 2, &"existing".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1, &"a".to_string()).unwrap();
+        let err = db.insert(&mut txn, 2, &"b".to_string()).unwrap_err();
+        assert!(matches!(err, IsamError::DuplicateKey));
+        // drop → auto rollback of key 1
+    }
+
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn, &1).unwrap(), None, "key 1 should be absent");
+    assert_eq!(db.get(&mut txn, &2).unwrap(), Some("existing".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_rollback_update() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 5, &"original".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.update(&mut txn, 5, &"modified".to_string()).unwrap();
+        // drop → rollback restores original RecordRef in index
+    }
+
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn, &5).unwrap(), Some("original".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_rollback_delete() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 99, &"keeper".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.delete(&mut txn, &99).unwrap();
+        // drop → rollback re-inserts key
+    }
+
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn, &99).unwrap(), Some("keeper".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_read_within_txn() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 7, &"visible".to_string()).unwrap();
+    // Read within same txn should see the just-inserted value.
+    assert_eq!(db.get(&mut txn, &7).unwrap(), Some("visible".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_isam_clone_concurrent_writes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("clone_concurrent");
+
+    let db: Isam<u32, String> = Isam::create(&path).unwrap();
+
+    // Write from original handle.
+    {
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1, &"from_original".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    // Write from a clone (sequentially here; the lock serializes concurrent access).
+    let db2 = db.clone();
+    {
+        let mut txn = db2.begin_transaction().unwrap();
+        db2.insert(&mut txn, 2, &"from_clone".to_string()).unwrap();
+        txn.commit().unwrap();
+    }
+
+    // Both keys visible via either handle.
+    let mut txn = db.begin_transaction().unwrap();
+    assert_eq!(db.get(&mut txn, &1).unwrap(), Some("from_original".to_string()));
+    assert_eq!(db.get(&mut txn, &2).unwrap(), Some("from_clone".to_string()));
+    txn.commit().unwrap();
+}
+
+#[test]
+fn test_transaction_commit_is_durable() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("durable");
+
+    {
+        let db: Isam<u32, String> = Isam::create(&path).unwrap();
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 42, &"durable".to_string()).unwrap();
+        txn.commit().unwrap();
+        // db dropped here
+    }
+
+    // Reopen and verify the data is still there.
+    let db2: Isam<u32, String> = Isam::open(&path).unwrap();
+    let mut txn = db2.begin_transaction().unwrap();
+    assert_eq!(db2.get(&mut txn, &42).unwrap(), Some("durable".to_string()));
+    txn.commit().unwrap();
 }

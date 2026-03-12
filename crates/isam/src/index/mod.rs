@@ -412,6 +412,10 @@ where
         self.pager.flush()
     }
 
+    pub fn fsync(&mut self) -> IsamResult<()> {
+        self.pager.fsync()
+    }
+
     // ------------------------------------------------------------------ //
     //  Private helpers — search
     // ------------------------------------------------------------------ //

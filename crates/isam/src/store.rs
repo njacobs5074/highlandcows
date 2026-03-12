@@ -190,4 +190,11 @@ impl DataStore {
         self.file.flush()?;
         Ok(())
     }
+
+    /// Flush OS buffers and call `fsync` to ensure durability.
+    pub fn fsync(&mut self) -> IsamResult<()> {
+        self.file.flush()?;
+        self.file.sync_all()?;
+        Ok(())
+    }
 }
