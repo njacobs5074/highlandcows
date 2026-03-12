@@ -1,19 +1,12 @@
-/// `IsamFile<K, V>` — the top-level public handle for an ISAM database.
+/// `Isam<K, V>` — the public orchestration interface for an ISAM database.
 ///
-/// Each logical database is backed by two files:
-/// - `<name>.idb`  — append-only data records
-/// - `<name>.idx`  — on-disk B-tree index
+/// `Isam` is a thin facade over `TransactionManager`.  All CRUD operations
+/// take a `&mut Transaction` obtained from `begin_transaction()`.
 ///
 /// ## Generic parameters
 ///
-/// - `K` — the key type; must be serializable, deserializable, ordered, and
-///   cheap to clone.  These bounds are stated once on the `impl` block rather
-///   than on every method.
-/// - `V` — the value type; must be serializable and deserializable.
-///   `V` is not stored as a field inside the struct, so we use
-///   `PhantomData<V>` to tell the Rust type checker that `IsamFile`
-///   logically "contains" values of type `V`.
-use std::marker::PhantomData;
+/// - `K` — key type; serializable, deserializable, ordered, cheap to clone.
+/// - `V` — value type; serializable and deserializable.
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 
@@ -21,18 +14,46 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::{IsamError, IsamResult};
-use crate::index::BTree;
-use crate::store::DataStore;
+use crate::manager::TransactionManager;
+use crate::storage::IsamStorage;
+use crate::store::RecordRef;
+use crate::transaction::Transaction;
+
+// ── Path helpers (pub(crate) so storage.rs can use them) ─────────────────── //
+
+pub(crate) fn idb_path(base: &Path) -> PathBuf {
+    base.with_extension("idb")
+}
+
+pub(crate) fn idx_path(base: &Path) -> PathBuf {
+    base.with_extension("idx")
+}
+
+/// Convert a borrowed `Bound<&K>` into an owned `Bound<K>` by cloning.
+fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
+    match b {
+        Bound::Included(k) => Bound::Included(k.clone()),
+        Bound::Excluded(k) => Bound::Excluded(k.clone()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
+// ── Isam ─────────────────────────────────────────────────────────────────── //
 
 /// The public ISAM database handle.
 ///
-/// Stores `base_path` so that `compact()` can create sibling temp files
-/// and atomically rename them into place.
+/// `Isam` is `Clone` — every clone is another handle to the same underlying
+/// storage.  Thread safety is provided by `TransactionManager`.
 pub struct Isam<K, V> {
-    store: DataStore,
-    index: BTree<K>,
-    base_path: PathBuf,
-    _phantom: PhantomData<V>,
+    manager: TransactionManager<K, V>,
+}
+
+impl<K, V> Clone for Isam<K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+        }
+    }
 }
 
 impl<K, V> Isam<K, V>
@@ -40,114 +61,117 @@ where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
+    // ── Lifecycle ────────────────────────────────────────────────────────── //
+
     pub fn create(path: impl AsRef<Path>) -> IsamResult<Self> {
-        let base = path.as_ref().to_path_buf();
         Ok(Self {
-            store: DataStore::create(&idb_path(&base))?,
-            index: BTree::create(&idx_path(&base))?,
-            base_path: base,
-            _phantom: PhantomData,
+            manager: TransactionManager::create(path.as_ref())?,
         })
     }
 
     pub fn open(path: impl AsRef<Path>) -> IsamResult<Self> {
-        let base = path.as_ref().to_path_buf();
         Ok(Self {
-            store: DataStore::open(&idb_path(&base))?,
-            index: BTree::open(&idx_path(&base))?,
-            base_path: base,
-            _phantom: PhantomData,
+            manager: TransactionManager::open(path.as_ref())?,
         })
     }
 
-    pub fn insert(&mut self, key: K, value: &V) -> IsamResult<()> {
-        let rec = self.store.append(&key, value)?;
-        self.index.insert(&key, rec)?;
+    /// Begin a new transaction.  The returned `Transaction` holds the database
+    /// lock until it is committed, rolled back, or dropped.
+    pub fn begin_transaction(&self) -> IsamResult<Transaction<'_, K, V>> {
+        self.manager.begin()
+    }
+
+    // ── CRUD ─────────────────────────────────────────────────────────────── //
+
+    pub fn insert(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
+        let storage = txn.storage_mut();
+        let rec = storage.store.append(&key, value)?;
+        storage.index.insert(&key, rec)?;
+        txn.log_insert(key);
         Ok(())
     }
 
-    pub fn get(&mut self, key: &K) -> IsamResult<Option<V>> {
-        match self.index.search(key)? {
+    pub fn get(&self, txn: &mut Transaction<'_, K, V>, key: &K) -> IsamResult<Option<V>> {
+        let storage = txn.storage_mut();
+        match storage.index.search(key)? {
             None => Ok(None),
-            Some(rec) => Ok(Some(self.store.read_value(rec)?)),
+            Some(rec) => Ok(Some(storage.store.read_value(rec)?)),
         }
     }
 
-    pub fn update(&mut self, key: K, value: &V) -> IsamResult<()> {
-        if self.index.search(&key)?.is_none() {
-            return Err(IsamError::KeyNotFound);
-        }
-        let rec = self.store.append(&key, value)?;
-        self.index.update(&key, rec)?;
+    pub fn update(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
+        let storage = txn.storage_mut();
+        let old_rec = storage.index.search(&key)?.ok_or(IsamError::KeyNotFound)?;
+        let new_rec = storage.store.append(&key, value)?;
+        storage.index.update(&key, new_rec)?;
+        txn.log_update(key, old_rec);
         Ok(())
     }
 
-    pub fn delete(&mut self, key: &K) -> IsamResult<()> {
-        self.index.delete(key)?;
-        self.store.append_tombstone(key)?;
+    pub fn delete(&self, txn: &mut Transaction<'_, K, V>, key: &K) -> IsamResult<()> {
+        let storage = txn.storage_mut();
+        let old_rec = storage.index.search(key)?.ok_or(IsamError::KeyNotFound)?;
+        storage.index.delete(key)?;
+        storage.store.append_tombstone(key)?;
+        txn.log_delete(key.clone(), old_rec);
         Ok(())
     }
 
-    /// Return the smallest key in the database, or `None` if it is empty.
-    pub fn min_key(&mut self) -> IsamResult<Option<K>> {
-        self.index.min_key()
+    /// Return the smallest key in the database, or `None` if empty.
+    pub fn min_key(&self, txn: &mut Transaction<'_, K, V>) -> IsamResult<Option<K>> {
+        txn.storage_mut().index.min_key()
     }
 
-    /// Return the largest key in the database, or `None` if it is empty.
-    pub fn max_key(&mut self) -> IsamResult<Option<K>> {
-        self.index.max_key()
+    /// Return the largest key in the database, or `None` if empty.
+    pub fn max_key(&self, txn: &mut Transaction<'_, K, V>) -> IsamResult<Option<K>> {
+        txn.storage_mut().index.max_key()
     }
 
-    pub fn iter(&mut self) -> IsamResult<IsamIter<'_, K, V>> {
-        let first_id = self.index.first_leaf_id()?;
+    // ── Iterators ────────────────────────────────────────────────────────── //
+
+    pub fn iter<'txn>(
+        &self,
+        txn: &'txn mut Transaction<'_, K, V>,
+    ) -> IsamResult<IsamIter<'txn, K, V>> {
+        let storage = txn.storage_mut();
+        let first_id = storage.index.first_leaf_id()?;
         let (entries, next_id) = if first_id != 0 {
-            self.index.read_leaf(first_id)?
+            storage.index.read_leaf(first_id)?
         } else {
             (vec![], 0)
         };
         Ok(IsamIter {
-            isam: self,
+            storage: txn.storage_mut(),
             buffer: entries,
             buf_pos: 0,
             next_leaf_id: next_id,
         })
     }
 
-    /// Return a key-ordered iterator over records whose keys fall within `range`.
-    ///
-    /// ## Example
-    /// ```rust,ignore
-    /// for result in db.range(3u32..=7).unwrap() {
-    ///     let (key, val) = result.unwrap();
-    /// }
-    /// ```
-    ///
-    /// `R: RangeBounds<K>` accepts any of Rust's built-in range expressions:
-    /// `a..b`, `a..=b`, `a..`, `..b`, `..=b`, `..`.
-    pub fn range<R>(&mut self, range: R) -> IsamResult<RangeIter<'_, K, V>>
+    pub fn range<'txn, R>(
+        &self,
+        txn: &'txn mut Transaction<'_, K, V>,
+        range: R,
+    ) -> IsamResult<RangeIter<'txn, K, V>>
     where
         R: RangeBounds<K>,
     {
-        // Clone the bounds out of the range so we can store them in the iterator.
-        // `Bound<&K>` → `Bound<K>` via the helper below.
         let start_bound = clone_bound(range.start_bound());
         let end_bound = clone_bound(range.end_bound());
 
-        // Position the starting leaf using `find_leaf_for_key` when we have a
-        // concrete lower bound; otherwise fall back to the leftmost leaf.
+        let storage = txn.storage_mut();
+
         let start_leaf_id = match &start_bound {
-            Bound::Included(k) | Bound::Excluded(k) => self.index.find_leaf_for_key(k)?,
-            Bound::Unbounded => self.index.first_leaf_id()?,
+            Bound::Included(k) | Bound::Excluded(k) => storage.index.find_leaf_for_key(k)?,
+            Bound::Unbounded => storage.index.first_leaf_id()?,
         };
 
         let (entries, next_leaf_id) = if start_leaf_id != 0 {
-            self.index.read_leaf(start_leaf_id)?
+            storage.index.read_leaf(start_leaf_id)?
         } else {
             (vec![], 0)
         };
 
-        // Trim entries that precede the start bound so the caller never sees
-        // keys that should be excluded.
         let buf_pos = match &start_bound {
             Bound::Included(k) => entries.partition_point(|(ek, _)| ek < k),
             Bound::Excluded(k) => entries.partition_point(|(ek, _)| ek <= k),
@@ -155,7 +179,7 @@ where
         };
 
         Ok(RangeIter {
-            isam: self,
+            storage: txn.storage_mut(),
             buffer: entries,
             buf_pos,
             next_leaf_id,
@@ -163,52 +187,128 @@ where
         })
     }
 
+    // ── Schema versioning ────────────────────────────────────────────────── //
+
     /// Return the key schema version stored in the index metadata.
-    pub fn key_schema_version(&self) -> u32 {
-        self.index.key_schema_version()
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.
+    pub fn key_schema_version(&self) -> IsamResult<u32> {
+        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        Ok(guard.index.key_schema_version())
     }
 
     /// Return the value schema version stored in the index metadata.
-    pub fn val_schema_version(&self) -> u32 {
-        self.index.val_schema_version()
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.
+    pub fn val_schema_version(&self) -> IsamResult<u32> {
+        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        Ok(guard.index.val_schema_version())
+    }
+
+    // ── Structural operations ─────────────────────────────────────────────── //
+
+    /// Compact the database, removing tombstones and stale values.
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.  These operations are
+    /// intended for offline administration — commit or roll back all open
+    /// transactions before calling them.
+    pub fn compact(&self) -> IsamResult<()> {
+        let mut storage = self
+            .manager
+            .storage
+            .lock()
+            .map_err(|_| IsamError::LockPoisoned)?;
+
+        let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        let first_id = storage.index.first_leaf_id()?;
+        let mut current_id = first_id;
+        while current_id != 0 {
+            let (entries, next_id) = storage.index.read_leaf(current_id)?;
+            for (_, rec) in &entries {
+                let (_status, key_bytes, val_bytes) = storage.store.read_record_raw(rec.offset)?;
+                records.push((key_bytes, val_bytes));
+            }
+            current_id = next_id;
+        }
+
+        let tmp_idb = storage.base_path.with_extension("idb.tmp");
+        let tmp_idx = storage.base_path.with_extension("idx.tmp");
+
+        let mut new_store = crate::store::DataStore::create(&tmp_idb)?;
+        let mut new_index: crate::index::BTree<K> = crate::index::BTree::create(&tmp_idx)?;
+
+        for (key_bytes, val_bytes) in &records {
+            let rec = new_store.write_raw_record(crate::store::STATUS_ALIVE, key_bytes, val_bytes)?;
+            let key: K = bincode::deserialize(key_bytes)?;
+            new_index.insert(&key, rec)?;
+        }
+
+        new_store.flush()?;
+        new_index.flush()?;
+        drop(new_store);
+        drop(new_index);
+
+        let base = storage.base_path.clone();
+        std::fs::rename(&tmp_idb, idb_path(&base))?;
+        std::fs::rename(&tmp_idx, idx_path(&base))?;
+
+        storage.store = crate::store::DataStore::open(&idb_path(&base))?;
+        storage.index = crate::index::BTree::open(&idx_path(&base))?;
+
+        Ok(())
     }
 
     /// Rewrite every value through `f`, bump the val schema version, and
     /// return a ready-to-use `Isam<K, V2>`.  Consumes `self`.
-    pub fn migrate_values<V2, F>(mut self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.  These operations are
+    /// intended for offline administration — commit or roll back all open
+    /// transactions before calling them.
+    pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
     where
         V2: Serialize + DeserializeOwned,
         F: FnMut(V) -> IsamResult<V2>,
     {
-        let base_path = self.base_path.clone();
-        let key_schema_v = self.index.key_schema_version();
+        let mut storage = self
+            .manager
+            .storage
+            .lock()
+            .map_err(|_| IsamError::LockPoisoned)?;
 
-        // Walk leaf chain, collect (key_bytes, V).
+        let base_path = storage.base_path.clone();
+        let key_schema_v = storage.index.key_schema_version();
+
         let mut records: Vec<(Vec<u8>, V)> = Vec::new();
-        let first_id = self.index.first_leaf_id()?;
+        let first_id = storage.index.first_leaf_id()?;
         let mut current_id = first_id;
         while current_id != 0 {
-            let (entries, next_id) = self.index.read_leaf(current_id)?;
+            let (entries, next_id) = storage.index.read_leaf(current_id)?;
             for (_, rec) in &entries {
-                let (_status, key_bytes, val_bytes) = self.store.read_record_raw(rec.offset)?;
+                let (_status, key_bytes, val_bytes) = storage.store.read_record_raw(rec.offset)?;
                 let v: V = bincode::deserialize(&val_bytes)?;
                 records.push((key_bytes, v));
             }
             current_id = next_id;
         }
 
-        // Apply f to each V → V2.
         let mut transformed: Vec<(Vec<u8>, V2)> = Vec::with_capacity(records.len());
         for (key_bytes, v) in records {
             transformed.push((key_bytes, f(v)?));
         }
 
-        // Write to temp files.
         let tmp_idb = base_path.with_extension("idb.tmp");
         let tmp_idx = base_path.with_extension("idx.tmp");
 
-        let mut new_store = DataStore::create(&tmp_idb)?;
-        let mut new_index: BTree<K> = BTree::create(&tmp_idx)?;
+        let mut new_store = crate::store::DataStore::create(&tmp_idb)?;
+        let mut new_index: crate::index::BTree<K> = crate::index::BTree::create(&tmp_idx)?;
         new_index.set_schema_versions(key_schema_v, new_val_version)?;
 
         for (key_bytes, v2) in &transformed {
@@ -222,7 +322,7 @@ where
         new_index.flush()?;
         drop(new_store);
         drop(new_index);
-        drop(self);
+        drop(storage);
 
         std::fs::rename(&tmp_idb, idb_path(&base_path))?;
         std::fs::rename(&tmp_idx, idx_path(&base_path))?;
@@ -233,37 +333,46 @@ where
     /// Rewrite every key through `f`, bump the key schema version, re-sort by
     /// `K2::Ord`, rebuild the index, and return a ready-to-use `Isam<K2, V>`.
     /// Consumes `self`.
-    pub fn migrate_keys<K2, F>(mut self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.  These operations are
+    /// intended for offline administration — commit or roll back all open
+    /// transactions before calling them.
+    pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
     where
         K2: Serialize + DeserializeOwned + Ord + Clone,
         F: FnMut(K) -> IsamResult<K2>,
     {
-        let base_path = self.base_path.clone();
-        let val_schema_v = self.index.val_schema_version();
+        let mut storage = self
+            .manager
+            .storage
+            .lock()
+            .map_err(|_| IsamError::LockPoisoned)?;
 
-        // Walk leaf chain, collect (K2, val_bytes).
+        let base_path = storage.base_path.clone();
+        let val_schema_v = storage.index.val_schema_version();
+
         let mut records: Vec<(K2, Vec<u8>)> = Vec::new();
-        let first_id = self.index.first_leaf_id()?;
+        let first_id = storage.index.first_leaf_id()?;
         let mut current_id = first_id;
         while current_id != 0 {
-            let (entries, next_id) = self.index.read_leaf(current_id)?;
+            let (entries, next_id) = storage.index.read_leaf(current_id)?;
             for (k, rec) in &entries {
-                let (_status, _key_bytes, val_bytes) = self.store.read_record_raw(rec.offset)?;
+                let (_status, _key_bytes, val_bytes) = storage.store.read_record_raw(rec.offset)?;
                 let k2 = f(k.clone())?;
                 records.push((k2, val_bytes));
             }
             current_id = next_id;
         }
 
-        // Sort by K2::Ord so the index is built in correct order.
         records.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        // Write to temp files.
         let tmp_idb = base_path.with_extension("idb.tmp");
         let tmp_idx = base_path.with_extension("idx.tmp");
 
-        let mut new_store = DataStore::create(&tmp_idb)?;
-        let mut new_index: BTree<K2> = BTree::create(&tmp_idx)?;
+        let mut new_store = crate::store::DataStore::create(&tmp_idb)?;
+        let mut new_index: crate::index::BTree<K2> = crate::index::BTree::create(&tmp_idx)?;
         new_index.set_schema_versions(new_key_version, val_schema_v)?;
 
         for (k2, val_bytes) in &records {
@@ -276,108 +385,44 @@ where
         new_index.flush()?;
         drop(new_store);
         drop(new_index);
-        drop(self);
+        drop(storage);
 
         std::fs::rename(&tmp_idb, idb_path(&base_path))?;
         std::fs::rename(&tmp_idx, idx_path(&base_path))?;
 
         Isam::<K2, V>::open(&base_path)
     }
-
-    pub fn compact(&mut self) -> IsamResult<()> {
-        // Collect alive records in key order from the leaf chain.
-        let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
-        let first_id = self.index.first_leaf_id()?;
-        let mut current_id = first_id;
-        while current_id != 0 {
-            let (entries, next_id) = self.index.read_leaf(current_id)?;
-            for (_, rec) in &entries {
-                let (_status, key_bytes, val_bytes) = self.store.read_record_raw(rec.offset)?;
-                records.push((key_bytes, val_bytes));
-            }
-            current_id = next_id;
-        }
-
-        // Write to temp files.
-        let tmp_idb = self.base_path.with_extension("idb.tmp");
-        let tmp_idx = self.base_path.with_extension("idx.tmp");
-
-        let mut new_store = DataStore::create(&tmp_idb)?;
-        let mut new_index: BTree<K> = BTree::create(&tmp_idx)?;
-
-        for (key_bytes, val_bytes) in &records {
-            let rec = new_store.write_raw_record(crate::store::STATUS_ALIVE, key_bytes, val_bytes)?;
-            let key: K = bincode::deserialize(key_bytes)?;
-            new_index.insert(&key, rec)?;
-        }
-
-        new_store.flush()?;
-        new_index.flush()?;
-
-        // Drop file handles before renaming.
-        drop(new_store);
-        drop(new_index);
-
-        // Atomically replace old files.
-        std::fs::rename(&tmp_idb, idb_path(&self.base_path))?;
-        std::fs::rename(&tmp_idx, idx_path(&self.base_path))?;
-
-        // Re-open the fresh files.
-        self.store = DataStore::open(&idb_path(&self.base_path))?;
-        self.index = BTree::open(&idx_path(&self.base_path))?;
-
-        Ok(())
-    }
 }
 
-// ───────────────────────────────────────────────────────────────────────── //
-//  Iterator
-// ───────────────────────────────────────────────────────────────────────── //
+// ── IsamIter ──────────────────────────────────────────────────────────────── //
 
-/// Key-order iterator over all alive records.
-///
-/// The lifetime `'a` ties the iterator to the `Isam` it was created from.
-/// While this iterator exists, `isam` is mutably borrowed, so you can't
-/// call `insert`/`delete` at the same time — the borrow checker enforces
-/// this at compile time.
-pub struct IsamIter<'a, K, V> {
-    isam: &'a mut Isam<K, V>,
-    buffer: Vec<(K, crate::store::RecordRef)>,
+pub struct IsamIter<'txn, K, V> {
+    storage: &'txn mut IsamStorage<K, V>,
+    buffer: Vec<(K, RecordRef)>,
     buf_pos: usize,
     next_leaf_id: u32,
 }
 
-/// `impl Iterator` means we implement the standard `Iterator` trait, giving
-/// the caller access to `for` loops, `.collect()`, `.map()`, etc. for free.
-impl<'a, K, V> Iterator for IsamIter<'a, K, V>
+impl<'txn, K, V> Iterator for IsamIter<'txn, K, V>
 where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
-    /// Each `next()` call yields either `Some(Ok((K, V)))` or `Some(Err(_))`
-    /// (for I/O errors), and `None` when exhausted.
     type Item = IsamResult<(K, V)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            // Serve from the in-memory buffer first.
             if self.buf_pos < self.buffer.len() {
                 let (key, rec) = self.buffer[self.buf_pos].clone();
                 self.buf_pos += 1;
-                return Some(
-                    self.isam
-                        .store
-                        .read_value(rec)
-                        .map(|value| (key, value)),
-                );
+                return Some(self.storage.store.read_value(rec).map(|value| (key, value)));
             }
 
-            // Buffer exhausted — load the next leaf page.
             if self.next_leaf_id == 0 {
-                return None; // end of the leaf chain
+                return None;
             }
 
-            match self.isam.index.read_leaf(self.next_leaf_id) {
+            match self.storage.index.read_leaf(self.next_leaf_id) {
                 Ok((entries, next_id)) => {
                     self.buffer = entries;
                     self.buf_pos = 0;
@@ -389,24 +434,17 @@ where
     }
 }
 
-// ───────────────────────────────────────────────────────────────────────── //
-//  Range iterator
-// ───────────────────────────────────────────────────────────────────────── //
+// ── RangeIter ────────────────────────────────────────────────────────────── //
 
-/// Key-order iterator over records whose key falls within a given range.
-///
-/// Created by [`Isam::range`].  Advances through the B-tree leaf chain,
-/// skipping entries before the start bound and stopping at the end bound.
-pub struct RangeIter<'a, K, V> {
-    isam: &'a mut Isam<K, V>,
-    buffer: Vec<(K, crate::store::RecordRef)>,
+pub struct RangeIter<'txn, K, V> {
+    storage: &'txn mut IsamStorage<K, V>,
+    buffer: Vec<(K, RecordRef)>,
     buf_pos: usize,
     next_leaf_id: u32,
-    /// The upper bound of the range, stored as an owned value.
     end_bound: Bound<K>,
 }
 
-impl<'a, K, V> Iterator for RangeIter<'a, K, V>
+impl<'txn, K, V> Iterator for RangeIter<'txn, K, V>
 where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
@@ -419,8 +457,6 @@ where
                 let (key, rec) = self.buffer[self.buf_pos].clone();
                 self.buf_pos += 1;
 
-                // Check whether this key is still within the end bound.
-                // If not, the range is exhausted — return None immediately.
                 let within = match &self.end_bound {
                     Bound::Included(end) => &key <= end,
                     Bound::Excluded(end) => &key < end,
@@ -430,21 +466,14 @@ where
                     return None;
                 }
 
-
-                return Some(
-                    self.isam
-                        .store
-                        .read_value(rec)
-                        .map(|value| (key, value)),
-                );
+                return Some(self.storage.store.read_value(rec).map(|value| (key, value)));
             }
 
-            // Buffer exhausted — load the next leaf page.
             if self.next_leaf_id == 0 {
                 return None;
             }
 
-            match self.isam.index.read_leaf(self.next_leaf_id) {
+            match self.storage.index.read_leaf(self.next_leaf_id) {
                 Ok((entries, next_id)) => {
                     self.buffer = entries;
                     self.buf_pos = 0;
@@ -453,29 +482,5 @@ where
                 Err(e) => return Some(Err(e)),
             }
         }
-    }
-}
-
-// ───────────────────────────────────────────────────────────────────────── //
-//  Path helpers
-// ───────────────────────────────────────────────────────────────────────── //
-
-fn idb_path(base: &Path) -> PathBuf {
-    base.with_extension("idb")
-}
-
-fn idx_path(base: &Path) -> PathBuf {
-    base.with_extension("idx")
-}
-
-/// Convert a borrowed `Bound<&K>` into an owned `Bound<K>` by cloning.
-///
-/// `RangeBounds::start_bound()` and `end_bound()` hand back `Bound<&T>`;
-/// we need owned values to store inside `RangeIter`.
-fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
-    match b {
-        Bound::Included(k) => Bound::Included(k.clone()),
-        Bound::Excluded(k) => Bound::Excluded(k.clone()),
-        Bound::Unbounded => Bound::Unbounded,
     }
 }

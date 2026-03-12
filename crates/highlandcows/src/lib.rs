@@ -7,5 +7,6 @@
 //! | Import | Description |
 //! |--------|-------------|
 //! | `highlandcows::Isam` | Persistent ISAM key/value store |
+//! | `highlandcows::Transaction` | ACID transaction handle |
 
-pub use highlandcows_isam::{Isam, IsamError, IsamIter, IsamResult, RangeIter};
+pub use highlandcows_isam::{Isam, IsamError, IsamIter, IsamResult, RangeIter, Transaction};

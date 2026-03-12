@@ -164,6 +164,13 @@ impl Pager {
         Ok(())
     }
 
+    /// Flush and fsync for durability.
+    pub fn fsync(&mut self) -> IsamResult<()> {
+        self.file.flush()?;
+        self.file.sync_all()?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------ //
     //  Static encoding helpers
     // ------------------------------------------------------------------ //
