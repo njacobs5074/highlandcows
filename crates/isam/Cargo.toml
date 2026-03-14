@@ -1,7 +1,15 @@
 [package]
-name    = "highlandcows-isam"
-version = "0.1.0"
-edition = "2021"
+name          = "highlandcows-isam"
+version       = "0.1.0"
+edition       = "2021"
+description   = "Persistent ISAM key/value store with ACID transactions, backed by an on-disk B-tree"
+license       = "MIT"
+repository    = "https://github.com/njacobs5074/highlandcows"
+homepage      = "https://github.com/njacobs5074/highlandcows"
+documentation = "https://njacobs5074.github.io/highlandcows/highlandcows_isam"
+readme        = "../../README.md"
+keywords      = ["isam", "database", "storage", "btree", "persistence"]
+categories    = ["database-implementations", "data-structures"]
 
 [dependencies]
 serde     = { version = "1", features = ["derive"] }

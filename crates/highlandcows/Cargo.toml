@@ -1,7 +1,15 @@
 [package]
-name    = "highlandcows"
-version = "0.1.0"
-edition = "2021"
+name          = "highlandcows"
+version       = "0.1.0"
+edition       = "2021"
+description   = "Umbrella crate re-exporting the highlandcows library suite"
+license       = "MIT"
+repository    = "https://github.com/njacobs5074/highlandcows"
+homepage      = "https://github.com/njacobs5074/highlandcows"
+documentation = "https://njacobs5074.github.io/highlandcows/highlandcows"
+readme        = "../../README.md"
+keywords      = ["isam", "database", "storage", "btree", "persistence"]
+categories    = ["database-implementations", "data-structures"]
 
 [dependencies]
-highlandcows-isam = { path = "../isam" }
+highlandcows-isam = { path = "../isam", version = "0.1.0" }

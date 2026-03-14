@@ -1,0 +1,30 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish highlandcows-isam
+        run: cargo publish -p highlandcows-isam
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      # Give crates.io time to index the dependency before publishing the facade.
+      - name: Wait for crates.io to index highlandcows-isam
+        run: sleep 30
+
+      - name: Publish highlandcows
+        run: cargo publish -p highlandcows
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
