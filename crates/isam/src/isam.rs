@@ -63,26 +63,80 @@ where
 {
     // ── Lifecycle ────────────────────────────────────────────────────────── //
 
+    /// Create a new, empty database at `path`.
+    ///
+    /// Two files are created: `<path>.idb` (data) and `<path>.idx` (index).
+    /// Any existing files at those paths are truncated.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// ```
     pub fn create(path: impl AsRef<Path>) -> IsamResult<Self> {
         Ok(Self {
             manager: TransactionManager::create(path.as_ref())?,
         })
     }
 
+    /// Open an existing database at `path`.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # Isam::<u32, String>::create(&path).unwrap();
+    /// let db: Isam<u32, String> = Isam::open(&path).unwrap();
+    /// ```
     pub fn open(path: impl AsRef<Path>) -> IsamResult<Self> {
         Ok(Self {
             manager: TransactionManager::open(path.as_ref())?,
         })
     }
 
-    /// Begin a new transaction.  The returned `Transaction` holds the database
-    /// lock until it is committed, rolled back, or dropped.
+    /// Begin a new transaction.
+    ///
+    /// The returned [`Transaction`] holds an exclusive lock on the database
+    /// until it is committed, rolled back, or dropped.  Dropping without
+    /// committing automatically rolls back all changes made in the transaction.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// // ... perform operations ...
+    /// txn.commit().unwrap();
+    /// ```
     pub fn begin_transaction(&self) -> IsamResult<Transaction<'_, K, V>> {
         self.manager.begin()
     }
 
     // ── CRUD ─────────────────────────────────────────────────────────────── //
 
+    /// Insert a new key-value pair.
+    ///
+    /// Returns [`IsamError::DuplicateKey`] if the key already exists.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.insert(&mut txn, 1u32, &"hello".to_string()).unwrap();
+    /// txn.commit().unwrap();
+    /// ```
     pub fn insert(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
         let storage = txn.storage_mut();
         let rec = storage.store.append(&key, value)?;
@@ -91,6 +145,23 @@ where
         Ok(())
     }
 
+    /// Look up a key and return its value, or `None` if the key does not exist.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # db.insert(&mut txn, 1u32, &"hello".to_string()).unwrap();
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// assert_eq!(db.get(&mut txn, &1u32).unwrap(), Some("hello".to_string()));
+    /// assert_eq!(db.get(&mut txn, &99u32).unwrap(), None);
+    /// txn.commit().unwrap();
+    /// ```
     pub fn get(&self, txn: &mut Transaction<'_, K, V>, key: &K) -> IsamResult<Option<V>> {
         let storage = txn.storage_mut();
         match storage.index.search(key)? {
@@ -99,6 +170,25 @@ where
         }
     }
 
+    /// Replace the value for an existing key.
+    ///
+    /// Returns [`IsamError::KeyNotFound`] if the key does not exist.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # db.insert(&mut txn, 1u32, &"old".to_string()).unwrap();
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.update(&mut txn, 1u32, &"new".to_string()).unwrap();
+    /// assert_eq!(db.get(&mut txn, &1u32).unwrap(), Some("new".to_string()));
+    /// txn.commit().unwrap();
+    /// ```
     pub fn update(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
         let storage = txn.storage_mut();
         let old_rec = storage.index.search(&key)?.ok_or(IsamError::KeyNotFound)?;
@@ -108,6 +198,25 @@ where
         Ok(())
     }
 
+    /// Remove a key and its associated value.
+    ///
+    /// Returns [`IsamError::KeyNotFound`] if the key does not exist.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # db.insert(&mut txn, 1u32, &"hello".to_string()).unwrap();
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.delete(&mut txn, &1u32).unwrap();
+    /// assert_eq!(db.get(&mut txn, &1u32).unwrap(), None);
+    /// txn.commit().unwrap();
+    /// ```
     pub fn delete(&self, txn: &mut Transaction<'_, K, V>, key: &K) -> IsamResult<()> {
         let storage = txn.storage_mut();
         let old_rec = storage.index.search(key)?.ok_or(IsamError::KeyNotFound)?;
@@ -118,17 +227,69 @@ where
     }
 
     /// Return the smallest key in the database, or `None` if empty.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, u32> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for k in [3u32, 1, 2] { db.insert(&mut txn, k, &k).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// assert_eq!(db.min_key(&mut txn).unwrap(), Some(1u32));
+    /// txn.commit().unwrap();
+    /// ```
     pub fn min_key(&self, txn: &mut Transaction<'_, K, V>) -> IsamResult<Option<K>> {
         txn.storage_mut().index.min_key()
     }
 
     /// Return the largest key in the database, or `None` if empty.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, u32> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for k in [3u32, 1, 2] { db.insert(&mut txn, k, &k).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// assert_eq!(db.max_key(&mut txn).unwrap(), Some(3u32));
+    /// txn.commit().unwrap();
+    /// ```
     pub fn max_key(&self, txn: &mut Transaction<'_, K, V>) -> IsamResult<Option<K>> {
         txn.storage_mut().index.max_key()
     }
 
     // ── Iterators ────────────────────────────────────────────────────────── //
 
+    /// Return a key-ordered iterator over all records.
+    ///
+    /// The iterator borrows `txn` for its lifetime, so no other operations
+    /// can be performed on the database until the iterator is dropped.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, u32> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for k in [3u32, 1, 2] { db.insert(&mut txn, k, &k).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// let keys: Vec<u32> = db.iter(&mut txn).unwrap()
+    ///     .map(|r| r.unwrap().0)
+    ///     .collect();
+    /// assert_eq!(keys, vec![1, 2, 3]);
+    /// txn.commit().unwrap();
+    /// ```
     pub fn iter<'txn>(
         &self,
         txn: &'txn mut Transaction<'_, K, V>,
@@ -148,6 +309,31 @@ where
         })
     }
 
+    /// Return a key-ordered iterator over records whose keys fall within `range`.
+    ///
+    /// Accepts any of Rust's built-in range expressions: `a..b`, `a..=b`,
+    /// `a..`, `..b`, `..=b`, `..`.
+    ///
+    /// The iterator borrows `txn` for its lifetime, so no other operations
+    /// can be performed on the database until the iterator is dropped.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, u32> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for k in 1u32..=10 { db.insert(&mut txn, k, &k).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// let keys: Vec<u32> = db.range(&mut txn, 3u32..=7).unwrap()
+    ///     .map(|r| r.unwrap().0)
+    ///     .collect();
+    /// assert_eq!(keys, vec![3, 4, 5, 6, 7]);
+    /// txn.commit().unwrap();
+    /// ```
     pub fn range<'txn, R>(
         &self,
         txn: &'txn mut Transaction<'_, K, V>,
@@ -191,9 +377,22 @@ where
 
     /// Return the key schema version stored in the index metadata.
     ///
+    /// Schema versions are set by [`migrate_keys`](Self::migrate_keys) and
+    /// default to `0` for newly created databases.
+    ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
     /// [`Transaction`] is live on the same thread.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// assert_eq!(db.key_schema_version().unwrap(), 0);
+    /// ```
     pub fn key_schema_version(&self) -> IsamResult<u32> {
         let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
         Ok(guard.index.key_schema_version())
@@ -201,9 +400,22 @@ where
 
     /// Return the value schema version stored in the index metadata.
     ///
+    /// Schema versions are set by [`migrate_values`](Self::migrate_values) and
+    /// default to `0` for newly created databases.
+    ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
     /// [`Transaction`] is live on the same thread.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// assert_eq!(db.val_schema_version().unwrap(), 0);
+    /// ```
     pub fn val_schema_version(&self) -> IsamResult<u32> {
         let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
         Ok(guard.index.val_schema_version())
@@ -213,11 +425,29 @@ where
 
     /// Compact the database, removing tombstones and stale values.
     ///
+    /// Rewrites the data and index files atomically via temp-file rename,
+    /// then re-opens them in place.
+    ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
     /// [`Transaction`] is live on the same thread.  These operations are
     /// intended for offline administration — commit or roll back all open
     /// transactions before calling them.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for i in 0u32..5 { db.insert(&mut txn, i, &i.to_string()).unwrap(); }
+    /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// // All transactions committed — safe to compact.
+    /// db.compact().unwrap();
+    /// ```
     pub fn compact(&self) -> IsamResult<()> {
         let mut storage = self
             .manager
@@ -267,11 +497,31 @@ where
     /// Rewrite every value through `f`, bump the val schema version, and
     /// return a ready-to-use `Isam<K, V2>`.  Consumes `self`.
     ///
+    /// Records are rewritten to new temp files and atomically renamed into
+    /// place.  The key schema version is preserved.
+    ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
     /// [`Transaction`] is live on the same thread.  These operations are
     /// intended for offline administration — commit or roll back all open
     /// transactions before calling them.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # db.insert(&mut txn, 1u32, &"42".to_string()).unwrap();
+    /// # txn.commit().unwrap();
+    /// // Migrate String values → u64, setting val schema version to 1.
+    /// let db2: Isam<u32, u64> = db
+    ///     .migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap()))
+    ///     .unwrap();
+    /// assert_eq!(db2.val_schema_version().unwrap(), 1);
+    /// ```
     pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
     where
         V2: Serialize + DeserializeOwned,
@@ -334,11 +584,31 @@ where
     /// `K2::Ord`, rebuild the index, and return a ready-to-use `Isam<K2, V>`.
     /// Consumes `self`.
     ///
+    /// Records are rewritten to new temp files and atomically renamed into
+    /// place.  The value schema version is preserved.
+    ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
     /// [`Transaction`] is live on the same thread.  These operations are
     /// intended for offline administration — commit or roll back all open
     /// transactions before calling them.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # db.insert(&mut txn, 1u32, &"one".to_string()).unwrap();
+    /// # txn.commit().unwrap();
+    /// // Migrate u32 keys → String, setting key schema version to 1.
+    /// let db2: Isam<String, String> = db
+    ///     .migrate_keys(1, |k: u32| Ok(format!("{k}")))
+    ///     .unwrap();
+    /// assert_eq!(db2.key_schema_version().unwrap(), 1);
+    /// ```
     pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
     where
         K2: Serialize + DeserializeOwned + Ord + Clone,
@@ -396,6 +666,10 @@ where
 
 // ── IsamIter ──────────────────────────────────────────────────────────────── //
 
+/// Key-order iterator over all alive records.
+///
+/// Created by [`Isam::iter`].  Borrows the [`Transaction`] for its lifetime,
+/// preventing other operations until the iterator is dropped.
 pub struct IsamIter<'txn, K, V> {
     storage: &'txn mut IsamStorage<K, V>,
     buffer: Vec<(K, RecordRef)>,
@@ -436,6 +710,10 @@ where
 
 // ── RangeIter ────────────────────────────────────────────────────────────── //
 
+/// Key-order iterator over records whose key falls within a given range.
+///
+/// Created by [`Isam::range`].  Borrows the [`Transaction`] for its lifetime,
+/// preventing other operations until the iterator is dropped.
 pub struct RangeIter<'txn, K, V> {
     storage: &'txn mut IsamStorage<K, V>,
     buffer: Vec<(K, RecordRef)>,

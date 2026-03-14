@@ -68,7 +68,28 @@ where
 
     // ── Public interface consumed by callers ───────────────────────────── //
 
-    /// Flush store + index to disk and release the lock.
+    /// Flush store and index to disk (`fsync`) and release the database lock.
+    ///
+    /// After `commit` returns the changes are durable and the lock is released,
+    /// allowing other threads to begin their own transactions.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.insert(&mut txn, 1u32, &"hello".to_string()).unwrap();
+    /// txn.commit().unwrap();
+    ///
+    /// // Data is now durable — visible after reopen.
+    /// let db2: Isam<u32, String> = Isam::open(&path).unwrap();
+    /// let mut txn2 = db2.begin_transaction().unwrap();
+    /// assert_eq!(db2.get(&mut txn2, &1u32).unwrap(), Some("hello".to_string()));
+    /// txn2.commit().unwrap();
+    /// ```
     pub fn commit(mut self) -> IsamResult<()> {
         self.guard.fsync()?;
         self.committed = true;
@@ -76,7 +97,28 @@ where
         // MutexGuard drops here, releasing the lock
     }
 
-    /// Apply undo log in reverse and release the lock.
+    /// Roll back all changes made in this transaction and release the lock.
+    ///
+    /// The undo log is applied in reverse order, restoring the index to the
+    /// state it had before the transaction began.  Dropping a `Transaction`
+    /// without calling `commit` has the same effect automatically.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.insert(&mut txn, 1u32, &"oops".to_string()).unwrap();
+    /// txn.rollback().unwrap();
+    ///
+    /// // Insert was rolled back — key is absent.
+    /// let mut txn2 = db.begin_transaction().unwrap();
+    /// assert_eq!(db.get(&mut txn2, &1u32).unwrap(), None);
+    /// txn2.commit().unwrap();
+    /// ```
     pub fn rollback(mut self) -> IsamResult<()> {
         self.do_rollback()?;
         self.committed = true;
