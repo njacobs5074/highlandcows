@@ -191,6 +191,7 @@ A few things to keep in mind:
 - **Transactional** — secondary index changes are rolled back when a transaction rolls back.
 - **Persistent** — index files survive process restarts; re-register the same indices on every `open`.
 - **Composite indices** — not yet built in, but achievable by deriving a tuple key: `type Key = (String, u32)`.
+- **No schema evolution support** — `migrate_values()` and `migrate_keys()` rewrite only the primary store; secondary index files are left untouched. If a value migration changes the fields that a secondary index derives its key from, the index will silently become stale. Drop and rebuild secondary index files manually after any such migration.
 
 ### API
 
