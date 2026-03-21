@@ -1,6 +1,6 @@
 # highlandcows
 
-![Build & Tests](https://github.com/njacobs5074/highlandcows/actions/workflows/rust.yml/badge.svg?branch=master)
+![Build & Tests](https://github.com/njacobs5074/highlandcows/actions/workflows/rust.yml/badge.svg?branch=main)
 
 A Cargo workspace of Rust libraries published under the `highlandcows` umbrella crate.
 
@@ -47,6 +47,7 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 - **Append-only data file** — mutations never overwrite existing records; stale data is reclaimed by `compact()`
 - **Key-ordered iteration** — sequential scan via a linked leaf-page chain
 - **Range queries** — efficient key-range iteration using `range(a..=b)`, `range(a..)`, etc.
+- **Secondary indices** — define additional indices on any field of the value type via the `DeriveKey` trait; non-unique (many records per secondary key); maintained automatically and rolled back with transactions
 - **Compaction** — atomically rewrites the data and index files, removing tombstones and stale records
 - **Cloneable handle** — `Isam` is `Clone`; each clone is another handle to the same underlying storage, safe to share across threads
 
@@ -54,10 +55,12 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 
 Each logical database is stored as two files:
 
-| File    | Contents                                      |
-|---------|-----------------------------------------------|
-| `*.idb` | Append-only data records (bincode-encoded)    |
-| `*.idx` | On-disk B-tree index (fixed 4096-byte pages)  |
+| File | Contents |
+|------|----------|
+| `*.idb` | Append-only data records (bincode-encoded) |
+| `*.idx` | On-disk B-tree index (fixed 4096-byte pages) |
+| `*_<name>.sidb` | Secondary index data store (one per named index) |
+| `*_<name>.sidx` | Secondary index B-tree (one per named index) |
 
 ### Quick start
 
@@ -139,6 +142,57 @@ std::thread::spawn(move || {
 > intended as offline administration operations — commit or roll back all open transactions
 > before calling them.
 
+### Secondary indices
+
+A secondary index lets you look up records by a field other than the primary key.
+Implement the `DeriveKey<V>` trait on a marker struct to describe what to index,
+then register it on the database before any writes.
+
+```rust
+use serde::{Serialize, Deserialize};
+use highlandcows::{Isam, DeriveKey};
+
+#[derive(Serialize, Deserialize, Clone)]
+struct User {
+    name: String,
+    city: String,
+}
+
+// One marker struct per index.
+struct CityIndex;
+
+impl DeriveKey<User> for CityIndex {
+    type Key = String;
+    fn derive(u: &User) -> String { u.city.clone() }
+}
+
+let db: Isam<u64, User> = Isam::create("/tmp/users")?;
+
+// Register before any writes. Re-register on every open.
+let city_idx = db.register_secondary_index("city", CityIndex)?;
+
+let mut txn = db.begin_transaction()?;
+db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
+db.insert(&mut txn, 2, &User { name: "Bob".into(),   city: "London".into() })?;
+db.insert(&mut txn, 3, &User { name: "Carol".into(), city: "Paris".into()  })?;
+txn.commit()?;
+
+// Look up all users in London.
+let mut txn = db.begin_transaction()?;
+let londoners = city_idx.lookup(&mut txn, &"London".to_string())?;
+// → [(1, User{Alice, London}), (2, User{Bob, London})]
+txn.commit()?;
+```
+
+A few things to keep in mind:
+
+- **Non-unique** — multiple records can share the same secondary key value.
+- **Automatic maintenance** — `insert`, `update`, and `delete` keep all registered indices in sync.
+- **Transactional** — secondary index changes are rolled back when a transaction rolls back.
+- **Persistent** — index files survive process restarts; re-register the same indices on every `open`.
+- **Composite indices** — not yet built in, but achievable by deriving a tuple key: `type Key = (String, u32)`.
+- **No schema evolution support** — `migrate_values()` and `migrate_keys()` rewrite only the primary store; secondary index files are left untouched. If a value migration changes the fields that a secondary index derives its key from, the index will silently become stale. Drop and rebuild secondary index files manually after any such migration.
+
 ### API
 
 ```rust
@@ -163,6 +217,10 @@ db.max_key(&mut txn)              -> IsamResult<Option<K>>
 txn.commit()                      -> IsamResult<()>
 txn.rollback()                    -> IsamResult<()>
 // drop(txn) also rolls back if not yet committed
+
+// Secondary indices (register before any writes; re-register on every open)
+db.register_secondary_index(name, extractor)  -> IsamResult<SecondaryIndexHandle<K, V, SK>>
+handle.lookup(&mut txn, &sk)                  -> IsamResult<Vec<(K, V)>>
 
 // Offline administration (must not be called while a Transaction is live)
 db.compact()                      -> IsamResult<()>
