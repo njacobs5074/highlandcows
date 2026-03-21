@@ -7,6 +7,7 @@
 ///
 /// - `K` — key type; serializable, deserializable, ordered, cheap to clone.
 /// - `V` — value type; serializable and deserializable.
+use std::marker::PhantomData;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
 
@@ -15,6 +16,7 @@ use serde::Serialize;
 
 use crate::error::{IsamError, IsamResult};
 use crate::manager::TransactionManager;
+use crate::secondary_index::{DeriveKey, SecondaryIndexImpl};
 use crate::storage::IsamStorage;
 use crate::store::RecordRef;
 use crate::transaction::Transaction;
@@ -58,8 +60,8 @@ impl<K, V> Clone for Isam<K, V> {
 
 impl<K, V> Isam<K, V>
 where
-    K: Serialize + DeserializeOwned + Ord + Clone,
-    V: Serialize + DeserializeOwned,
+    K: Serialize + DeserializeOwned + Ord + Clone + 'static,
+    V: Serialize + DeserializeOwned + Clone + 'static,
 {
     // ── Lifecycle ────────────────────────────────────────────────────────── //
 
@@ -138,10 +140,15 @@ where
     /// txn.commit().unwrap();
     /// ```
     pub fn insert(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
-        let storage = txn.storage_mut();
-        let rec = storage.store.append(&key, value)?;
-        storage.index.insert(&key, rec)?;
-        txn.log_insert(key);
+        {
+            let storage = txn.storage_mut();
+            let rec = storage.store.append(&key, value)?;
+            storage.index.insert(&key, rec)?;
+            for si in &mut storage.secondary_indices {
+                si.on_insert(&key, value)?;
+            }
+        }
+        txn.log_insert(key, value.clone());
         Ok(())
     }
 
@@ -190,11 +197,21 @@ where
     /// txn.commit().unwrap();
     /// ```
     pub fn update(&self, txn: &mut Transaction<'_, K, V>, key: K, value: &V) -> IsamResult<()> {
-        let storage = txn.storage_mut();
-        let old_rec = storage.index.search(&key)?.ok_or(IsamError::KeyNotFound)?;
-        let new_rec = storage.store.append(&key, value)?;
-        storage.index.update(&key, new_rec)?;
-        txn.log_update(key, old_rec);
+        let (old_rec, old_value) = {
+            let storage = txn.storage_mut();
+            let old_rec = storage.index.search(&key)?.ok_or(IsamError::KeyNotFound)?;
+            let old_value: V = storage.store.read_value(old_rec)?;
+            (old_rec, old_value)
+        };
+        {
+            let storage = txn.storage_mut();
+            let new_rec = storage.store.append(&key, value)?;
+            storage.index.update(&key, new_rec)?;
+            for si in &mut storage.secondary_indices {
+                si.on_update(&key, &old_value, value)?;
+            }
+        }
+        txn.log_update(key, old_rec, old_value, value.clone());
         Ok(())
     }
 
@@ -218,11 +235,21 @@ where
     /// txn.commit().unwrap();
     /// ```
     pub fn delete(&self, txn: &mut Transaction<'_, K, V>, key: &K) -> IsamResult<()> {
-        let storage = txn.storage_mut();
-        let old_rec = storage.index.search(key)?.ok_or(IsamError::KeyNotFound)?;
-        storage.index.delete(key)?;
-        storage.store.append_tombstone(key)?;
-        txn.log_delete(key.clone(), old_rec);
+        let (old_rec, old_value) = {
+            let storage = txn.storage_mut();
+            let old_rec = storage.index.search(key)?.ok_or(IsamError::KeyNotFound)?;
+            let old_value: V = storage.store.read_value(old_rec)?;
+            (old_rec, old_value)
+        };
+        {
+            let storage = txn.storage_mut();
+            storage.index.delete(key)?;
+            storage.store.append_tombstone(key)?;
+            for si in &mut storage.secondary_indices {
+                si.on_delete(key, &old_value)?;
+            }
+        }
+        txn.log_delete(key.clone(), old_rec, old_value);
         Ok(())
     }
 
@@ -370,6 +397,73 @@ where
             buf_pos,
             next_leaf_id,
             end_bound,
+        })
+    }
+
+    // ── Secondary indices ─────────────────────────────────────────────────── //
+
+    /// Register a secondary index on this database.
+    ///
+    /// Must be called **before** any writes.  All secondary indices must be
+    /// re-registered each time the database is opened.
+    ///
+    /// Returns a [`SecondaryIndexHandle`] that can be used to query the index.
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db: Isam<u64, User> = Isam::create(&path).unwrap();
+    ///
+    /// // Register before any writes; re-register on every open.
+    /// let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    ///
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
+    /// txn.commit().unwrap();
+    ///
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    /// assert_eq!(results.len(), 1);
+    /// txn.commit().unwrap();
+    /// ```
+    pub fn register_secondary_index<E>(
+        &self,
+        name: &str,
+        _extractor: E,
+    ) -> IsamResult<SecondaryIndexHandle<K, V, E::Key>>
+    where
+        E: DeriveKey<V>,
+        K: Send,
+        V: Send,
+    {
+        let mut storage = self
+            .manager
+            .storage
+            .lock()
+            .map_err(|_| IsamError::LockPoisoned)?;
+        let si = SecondaryIndexImpl::<K, V, E>::create_or_open(name, &storage.base_path)?;
+        storage.secondary_indices.push(Box::new(si));
+        Ok(SecondaryIndexHandle {
+            name: name.to_owned(),
+            _phantom: PhantomData,
         })
     }
 
@@ -524,7 +618,7 @@ where
     /// ```
     pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
     where
-        V2: Serialize + DeserializeOwned,
+        V2: Serialize + DeserializeOwned + Clone + 'static,
         F: FnMut(V) -> IsamResult<V2>,
     {
         let mut storage = self
@@ -611,7 +705,7 @@ where
     /// ```
     pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
     where
-        K2: Serialize + DeserializeOwned + Ord + Clone,
+        K2: Serialize + DeserializeOwned + Ord + Clone + 'static,
         F: FnMut(K) -> IsamResult<K2>,
     {
         let mut storage = self
@@ -760,5 +854,89 @@ where
                 Err(e) => return Some(Err(e)),
             }
         }
+    }
+}
+
+// ── SecondaryIndexHandle ──────────────────────────────────────────────────── //
+
+/// An opaque handle to a registered secondary index, used for point lookups.
+///
+/// Obtained from [`Isam::register_secondary_index`].
+pub struct SecondaryIndexHandle<K, V, SK> {
+    name: String,
+    _phantom: PhantomData<fn() -> (K, V, SK)>,
+}
+
+impl<K, V, SK> SecondaryIndexHandle<K, V, SK>
+where
+    K: Serialize + DeserializeOwned + Ord + Clone,
+    V: Serialize + DeserializeOwned,
+    SK: Serialize + DeserializeOwned + Ord + Clone,
+{
+    /// Return all `(primary_key, value)` pairs whose secondary key equals `sk`.
+    ///
+    /// Results are returned in insertion order (not key order).  For a
+    /// non-existent secondary key the result is an empty `Vec`.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db: Isam<u64, User> = Isam::create(&path).unwrap();
+    /// let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    ///
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
+    /// db.insert(&mut txn, 2, &User { name: "Bob".into(),   city: "London".into() }).unwrap();
+    /// db.insert(&mut txn, 3, &User { name: "Carol".into(), city: "Paris".into()  }).unwrap();
+    /// txn.commit().unwrap();
+    ///
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// let mut londoners = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    /// londoners.sort_by_key(|(pk, _)| *pk);
+    /// assert_eq!(londoners[0].0, 1);
+    /// assert_eq!(londoners[1].0, 2);
+    /// assert_eq!(city_idx.lookup(&mut txn, &"Berlin".to_string()).unwrap(), vec![]);
+    /// txn.commit().unwrap();
+    /// ```
+    pub fn lookup(
+        &self,
+        txn: &mut Transaction<'_, K, V>,
+        sk: &SK,
+    ) -> IsamResult<Vec<(K, V)>> {
+        let sk_bytes = bincode::serialize(sk)?;
+
+        // Step 1: look up primary keys in the secondary index.
+        let pks: Vec<K> = {
+            let storage = txn.storage_mut();
+            match storage.secondary_indices.iter_mut().find(|si| si.name() == self.name) {
+                None => Vec::new(),
+                Some(si) => si.lookup_primary_keys(&sk_bytes)?,
+            }
+        };
+
+        // Step 2: fetch each primary record.
+        let storage = txn.storage_mut();
+        let mut results = Vec::with_capacity(pks.len());
+        for pk in pks {
+            if let Some(rec) = storage.index.search(&pk)? {
+                let value = storage.store.read_value(rec)?;
+                results.push((pk, value));
+            }
+        }
+        Ok(results)
     }
 }

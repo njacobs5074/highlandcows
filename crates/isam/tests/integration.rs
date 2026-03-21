@@ -5,14 +5,15 @@
 ///   let mut txn = db.begin_transaction()?;
 ///   db.insert(&mut txn, key, &val)?;
 ///   txn.commit()?;
-use highlandcows_isam::{IsamError, Isam};
+use highlandcows_isam::{DeriveKey, IsamError, Isam};
+use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
 /// Helper: open a fresh database in a temp dir.
 fn make_db<K, V>() -> (TempDir, Isam<K, V>)
 where
-    K: serde::Serialize + serde::de::DeserializeOwned + Ord + Clone,
-    V: serde::Serialize + serde::de::DeserializeOwned,
+    K: serde::Serialize + serde::de::DeserializeOwned + Ord + Clone + 'static,
+    V: serde::Serialize + serde::de::DeserializeOwned + Clone + 'static,
 {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test");
@@ -768,4 +769,268 @@ fn test_transaction_commit_is_durable() {
     let mut txn = db2.begin_transaction().unwrap();
     assert_eq!(db2.get(&mut txn, &42).unwrap(), Some("durable".to_string()));
     txn.commit().unwrap();
+}
+
+// ── Secondary index tests ──────────────────────────────────────────────────── //
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Person {
+    name: String,
+    city: String,
+}
+
+struct CityIndex;
+impl DeriveKey<Person> for CityIndex {
+    type Key = String;
+    fn derive(p: &Person) -> String {
+        p.city.clone()
+    }
+}
+
+struct NameIndex;
+impl DeriveKey<Person> for NameIndex {
+    type Key = String;
+    fn derive(p: &Person) -> String {
+        p.name.clone()
+    }
+}
+
+fn make_person_db() -> (TempDir, Isam<u32, Person>) {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("people");
+    let db = Isam::create(&path).unwrap();
+    (dir, db)
+}
+
+#[test]
+fn test_secondary_index_basic_lookup() {
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    db.insert(&mut txn, 2, &Person { name: "Bob".into(), city: "Paris".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 1);
+    assert_eq!(results[0].1.name, "Alice");
+}
+
+#[test]
+fn test_secondary_index_non_unique() {
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    db.insert(&mut txn, 2, &Person { name: "Bob".into(), city: "London".into() }).unwrap();
+    db.insert(&mut txn, 3, &Person { name: "Carol".into(), city: "Paris".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let mut results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    results.sort_by_key(|(k, _)| *k);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].0, 1);
+    assert_eq!(results[1].0, 2);
+}
+
+#[test]
+fn test_secondary_index_no_match_returns_empty() {
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"Tokyo".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_secondary_index_update_same_sk() {
+    // Updating a record without changing the secondary key — bucket stays intact.
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.update(&mut txn, 1, &Person { name: "Alice Smith".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].1.name, "Alice Smith");
+}
+
+#[test]
+fn test_secondary_index_update_changes_sk() {
+    // Updating a record so its secondary key changes — old bucket loses the PK,
+    // new bucket gains it.
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.update(&mut txn, 1, &Person { name: "Alice".into(), city: "Paris".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let london = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    let paris = city_idx.lookup(&mut txn, &"Paris".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert!(london.is_empty());
+    assert_eq!(paris.len(), 1);
+    assert_eq!(paris[0].0, 1);
+}
+
+#[test]
+fn test_secondary_index_delete_removes_from_bucket() {
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    db.insert(&mut txn, 2, &Person { name: "Bob".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.delete(&mut txn, &1).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 2);
+}
+
+#[test]
+fn test_secondary_index_rollback_insert() {
+    // Rolling back an insert must also remove the PK from the secondary index.
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.rollback().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_secondary_index_rollback_update() {
+    // Rolling back an update must restore the secondary index to its pre-update state.
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.update(&mut txn, 1, &Person { name: "Alice".into(), city: "Paris".into() }).unwrap();
+    txn.rollback().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let london = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    let paris = city_idx.lookup(&mut txn, &"Paris".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(london.len(), 1);
+    assert!(paris.is_empty());
+}
+
+#[test]
+fn test_secondary_index_rollback_delete() {
+    // Rolling back a delete must re-add the PK to the secondary index.
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.delete(&mut txn, &1).unwrap();
+    txn.rollback().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 1);
+}
+
+#[test]
+fn test_secondary_index_reopen() {
+    // Secondary index survives a database close and reopen.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("people");
+
+    {
+        let db: Isam<u32, Person> = Isam::create(&path).unwrap();
+        let _city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+        let mut txn = db.begin_transaction().unwrap();
+        db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+        txn.commit().unwrap();
+    }
+
+    let db: Isam<u32, Person> = Isam::open(&path).unwrap();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, 1);
+}
+
+#[test]
+fn test_multiple_secondary_indices() {
+    let (_dir, db) = make_person_db();
+    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let name_idx = db.register_secondary_index("name", NameIndex).unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
+    db.insert(&mut txn, 2, &Person { name: "Bob".into(), city: "London".into() }).unwrap();
+    txn.commit().unwrap();
+
+    let mut txn = db.begin_transaction().unwrap();
+    let by_city = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+    let by_name = name_idx.lookup(&mut txn, &"Alice".to_string()).unwrap();
+    txn.commit().unwrap();
+
+    assert_eq!(by_city.len(), 2);
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].0, 1);
 }

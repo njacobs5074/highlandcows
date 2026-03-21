@@ -14,13 +14,13 @@ use crate::store::RecordRef;
 
 // ── Undo log entry ───────────────────────────────────────────────────────── //
 
-pub(crate) enum UndoEntry<K> {
-    /// Undo an insert by deleting the key from the index.
-    Insert { key: K },
-    /// Undo an update by restoring the old RecordRef.
-    Update { key: K, old_rec: RecordRef },
-    /// Undo a delete by re-inserting the key with its old RecordRef.
-    Delete { key: K, old_rec: RecordRef },
+pub(crate) enum UndoEntry<K, V> {
+    /// Undo an insert by deleting the key from the primary index and secondary indices.
+    Insert { key: K, value: V },
+    /// Undo an update by restoring the old RecordRef and reversing secondary index changes.
+    Update { key: K, old_rec: RecordRef, old_value: V, new_value: V },
+    /// Undo a delete by re-inserting the key with its old RecordRef and secondary indices.
+    Delete { key: K, old_rec: RecordRef, value: V },
 }
 
 // ── Transaction ──────────────────────────────────────────────────────────── //
@@ -31,7 +31,7 @@ where
     V: Serialize + DeserializeOwned,
 {
     guard: MutexGuard<'a, IsamStorage<K, V>>,
-    undo_log: Vec<UndoEntry<K>>,
+    undo_log: Vec<UndoEntry<K, V>>,
     committed: bool,
 }
 
@@ -54,16 +54,16 @@ where
         &mut self.guard
     }
 
-    pub(crate) fn log_insert(&mut self, key: K) {
-        self.undo_log.push(UndoEntry::Insert { key });
+    pub(crate) fn log_insert(&mut self, key: K, value: V) {
+        self.undo_log.push(UndoEntry::Insert { key, value });
     }
 
-    pub(crate) fn log_update(&mut self, key: K, old_rec: RecordRef) {
-        self.undo_log.push(UndoEntry::Update { key, old_rec });
+    pub(crate) fn log_update(&mut self, key: K, old_rec: RecordRef, old_value: V, new_value: V) {
+        self.undo_log.push(UndoEntry::Update { key, old_rec, old_value, new_value });
     }
 
-    pub(crate) fn log_delete(&mut self, key: K, old_rec: RecordRef) {
-        self.undo_log.push(UndoEntry::Delete { key, old_rec });
+    pub(crate) fn log_delete(&mut self, key: K, old_rec: RecordRef, value: V) {
+        self.undo_log.push(UndoEntry::Delete { key, old_rec, value });
     }
 
     // ── Public interface consumed by callers ───────────────────────────── //
@@ -131,13 +131,22 @@ where
         // Apply in reverse order
         while let Some(entry) = self.undo_log.pop() {
             match entry {
-                UndoEntry::Insert { key } => {
+                UndoEntry::Insert { key, value } => {
+                    for si in &mut self.guard.secondary_indices {
+                        let _ = si.undo_insert(&key, &value);
+                    }
                     let _ = self.guard.index.delete(&key);
                 }
-                UndoEntry::Update { key, old_rec } => {
+                UndoEntry::Update { key, old_rec, old_value, new_value } => {
+                    for si in &mut self.guard.secondary_indices {
+                        let _ = si.undo_update(&key, &old_value, &new_value);
+                    }
                     let _ = self.guard.index.update(&key, old_rec);
                 }
-                UndoEntry::Delete { key, old_rec } => {
+                UndoEntry::Delete { key, old_rec, value } => {
+                    for si in &mut self.guard.secondary_indices {
+                        let _ = si.undo_delete(&key, &value);
+                    }
                     let _ = self.guard.index.insert(&key, old_rec);
                 }
             }

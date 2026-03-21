@@ -11,12 +11,14 @@ use serde::Serialize;
 use crate::error::IsamResult;
 use crate::index::BTree;
 use crate::isam::{idb_path, idx_path};
+use crate::secondary_index::AnySecondaryIndex;
 use crate::store::DataStore;
 
 pub(crate) struct IsamStorage<K, V> {
     pub(crate) store: DataStore,
     pub(crate) index: BTree<K>,
     pub(crate) base_path: PathBuf,
+    pub(crate) secondary_indices: Vec<Box<dyn AnySecondaryIndex<K, V>>>,
     pub(crate) _phantom: PhantomData<V>,
 }
 
@@ -31,6 +33,7 @@ where
             store: DataStore::create(&idb_path(&base))?,
             index: BTree::create(&idx_path(&base))?,
             base_path: base,
+            secondary_indices: Vec::new(),
             _phantom: PhantomData,
         })
     }
@@ -41,14 +44,18 @@ where
             store: DataStore::open(&idb_path(&base))?,
             index: BTree::open(&idx_path(&base))?,
             base_path: base,
+            secondary_indices: Vec::new(),
             _phantom: PhantomData,
         })
     }
 
-    /// Flush store then index to disk (called at commit).
+    /// Flush store, index, and all secondary indices to disk (called at commit).
     pub(crate) fn fsync(&mut self) -> IsamResult<()> {
         self.store.fsync()?;
         self.index.fsync()?;
+        for si in &mut self.secondary_indices {
+            si.fsync()?;
+        }
         Ok(())
     }
 }
