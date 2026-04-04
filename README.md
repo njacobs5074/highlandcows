@@ -89,12 +89,13 @@ db.write(|txn| {
 })?;
 
 // Iterate in key order
-let mut txn = db.begin_transaction()?;
-for result in db.iter(&mut txn)? {
-    let (key, value) = result?;
-    println!("{key} => {value}");
-}
-txn.commit()?;
+db.read(|txn| {
+    for result in db.iter(txn)? {
+        let (key, value) = result?;
+        println!("{key} => {value}");
+    }
+    Ok(())
+})?;
 
 // Remove stale records and reclaim disk space (outside any transaction)
 db.compact()?;
