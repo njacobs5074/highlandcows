@@ -18,13 +18,18 @@ A Cargo workspace of Rust libraries published under the `highlandcows` umbrella 
 
 ## Usage
 
-Add the umbrella crate to your `Cargo.toml`:
+Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-highlandcows = { path = "path/to/highlandcows/crates/highlandcows" }
-# or, once published to crates.io:
-highlandcows = "0.1"
+highlandcows = "0.1.1"
+```
+
+Or, if you prefer to depend on the ISAM crate directly:
+
+```toml
+[dependencies]
+highlandcows-isam = "0.1.1"
 ```
 
 Then import what you need:
