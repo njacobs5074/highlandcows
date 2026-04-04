@@ -107,6 +107,10 @@ where
     /// until it is committed, rolled back, or dropped.  Dropping without
     /// committing automatically rolls back all changes made in the transaction.
     ///
+    /// For simple single-operation use, prefer the [`write`](Self::write) and
+    /// [`read`](Self::read) helpers, which handle begin/commit/rollback
+    /// automatically.
+    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
