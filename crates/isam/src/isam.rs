@@ -122,6 +122,61 @@ where
         self.manager.begin()
     }
 
+    /// Execute a write closure inside a transaction.
+    ///
+    /// Begins a transaction, passes it to `f`, then commits on `Ok` or rolls
+    /// back on `Err`.  The return value of `f` is forwarded to the caller.
+    ///
+    /// Use this for inserts, updates, and deletes where you don't need to
+    /// manage the transaction lifetime manually.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// db.write(|txn| db.insert(txn, 1u32, &"hello".to_string())).unwrap();
+    /// ```
+    pub fn write<F, T>(&self, f: F) -> IsamResult<T>
+    where
+        F: FnOnce(&mut Transaction<'_, K, V>) -> IsamResult<T>,
+    {
+        let mut txn = self.begin_transaction()?;
+        match f(&mut txn) {
+            Ok(val) => { txn.commit()?; Ok(val) }
+            Err(e)  => { let _ = txn.rollback(); Err(e) }
+        }
+    }
+
+    /// Execute a read closure inside a transaction.
+    ///
+    /// Begins a transaction, passes it to `f`, then rolls back unconditionally
+    /// (since reads make no changes).  The return value of `f` is forwarded to
+    /// the caller.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # db.write(|txn| db.insert(txn, 1u32, &"hello".to_string())).unwrap();
+    /// let val = db.read(|txn| db.get(txn, &1u32)).unwrap();
+    /// assert_eq!(val, Some("hello".to_string()));
+    /// ```
+    pub fn read<F, T>(&self, f: F) -> IsamResult<T>
+    where
+        F: FnOnce(&mut Transaction<'_, K, V>) -> IsamResult<T>,
+    {
+        let mut txn = self.begin_transaction()?;
+        let result = f(&mut txn);
+        let _ = txn.rollback();
+        result
+    }
+
     // ── CRUD ─────────────────────────────────────────────────────────────── //
 
     /// Insert a new key-value pair.
