@@ -1034,3 +1034,97 @@ fn test_multiple_secondary_indices() {
     assert_eq!(by_name.len(), 1);
     assert_eq!(by_name[0].0, 1);
 }
+
+// ── write() / read() helpers ───────────────────────────────────────────────── //
+
+#[test]
+fn test_write_insert_and_read_get() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    db.write(|txn| db.insert(txn, 1, &"hello".to_string())).unwrap();
+
+    let val = db.read(|txn| db.get(txn, &1)).unwrap();
+    assert_eq!(val, Some("hello".to_string()));
+}
+
+#[test]
+fn test_write_update_and_delete() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    db.write(|txn| db.insert(txn, 1, &"hello".to_string())).unwrap();
+    db.write(|txn| db.update(txn, 1, &"world".to_string())).unwrap();
+
+    let val = db.read(|txn| db.get(txn, &1)).unwrap();
+    assert_eq!(val, Some("world".to_string()));
+
+    db.write(|txn| db.delete(txn, &1)).unwrap();
+
+    let val = db.read(|txn| db.get(txn, &1)).unwrap();
+    assert_eq!(val, None);
+}
+
+#[test]
+fn test_write_multi_step() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    db.write(|txn| {
+        db.insert(txn, 1, &"one".to_string())?;
+        db.insert(txn, 2, &"two".to_string())?;
+        db.insert(txn, 3, &"three".to_string())?;
+        Ok(())
+    }).unwrap();
+
+    assert_eq!(db.read(|txn| db.get(txn, &1)).unwrap(), Some("one".to_string()));
+    assert_eq!(db.read(|txn| db.get(txn, &2)).unwrap(), Some("two".to_string()));
+    assert_eq!(db.read(|txn| db.get(txn, &3)).unwrap(), Some("three".to_string()));
+}
+
+#[test]
+fn test_write_rolls_back_on_error() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    db.write(|txn| db.insert(txn, 1, &"one".to_string())).unwrap();
+
+    // Second insert of key 1 is a duplicate — should roll back the whole closure.
+    let result = db.write(|txn| {
+        db.insert(txn, 2, &"two".to_string())?;
+        db.insert(txn, 1, &"duplicate".to_string())?; // errors here
+        Ok(())
+    });
+
+    assert!(matches!(result, Err(IsamError::DuplicateKey)));
+    // Key 2 must not have been committed.
+    assert_eq!(db.read(|txn| db.get(txn, &2)).unwrap(), None);
+}
+
+#[test]
+fn test_write_returns_closure_value() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    // write() forwards the closure's return value to the caller.
+    let inserted = db.write(|txn| {
+        db.insert(txn, 42, &"answer".to_string())?;
+        Ok(42u32)
+    }).unwrap();
+
+    assert_eq!(inserted, 42u32);
+}
+
+#[test]
+fn test_read_returns_closure_value() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+
+    db.write(|txn| db.insert(txn, 1, &"hello".to_string())).unwrap();
+
+    // read() forwards the closure's return value to the caller.
+    let count = db.read(|txn| {
+        let mut n = 0u32;
+        for item in db.iter(txn)? {
+            item?;
+            n += 1;
+        }
+        Ok(n)
+    }).unwrap();
+
+    assert_eq!(count, 1);
+}
