@@ -70,19 +70,18 @@ use highlandcows::Isam;
 // Create a new database (pass any path prefix — extensions are added automatically)
 let db: Isam<String, u64> = Isam::create("/tmp/mydb")?;
 
-// All mutations and reads happen inside a transaction.
-let mut txn = db.begin_transaction()?;
+// Single-operation helpers — begin/commit/rollback handled automatically.
+db.write(|txn| db.insert(txn, "alice".to_string(), &42))?;
+db.write(|txn| db.insert(txn, "bob".to_string(), &99))?;
 
-db.insert(&mut txn, "alice".to_string(), &42)?;
-db.insert(&mut txn, "bob".to_string(), &99)?;
+let val = db.read(|txn| db.get(txn, &"alice".to_string()))?; // Some(42)
 
-let val = db.get(&mut txn, &"alice".to_string())?; // Some(42)
-
-db.update(&mut txn, "alice".to_string(), &100)?;
-db.delete(&mut txn, &"bob".to_string())?;
-
-// Flush to disk and release the lock.
-txn.commit()?;
+// Multi-step writes use the same closure — commit on Ok, rollback on Err.
+db.write(|txn| {
+    db.update(txn, "alice".to_string(), &100)?;
+    db.delete(txn, &"bob".to_string())?;
+    Ok(())
+})?;
 
 // Iterate in key order
 let mut txn = db.begin_transaction()?;
@@ -199,7 +198,16 @@ A few things to keep in mind:
 // Lifecycle
 Isam::create(path)          -> IsamResult<Self>
 Isam::open(path)            -> IsamResult<Self>
+
+// Transaction helpers (recommended for single operations)
+db.write(|txn| { ... })     -> IsamResult<T>   // commits on Ok, rolls back on Err
+db.read(|txn| { ... })      -> IsamResult<T>   // always rolls back
+
+// Manual transaction control (for multi-step or fine-grained use)
 db.begin_transaction()      -> IsamResult<Transaction<'_, K, V>>
+txn.commit()                -> IsamResult<()>
+txn.rollback()              -> IsamResult<()>
+// drop(txn) also rolls back if not yet committed
 
 // CRUD (all take &mut Transaction)
 db.insert(&mut txn, key, &value)  -> IsamResult<()>   // errors on duplicate key
@@ -212,11 +220,6 @@ db.iter(&mut txn)                 -> IsamResult<IsamIter<K, V>>
 db.range(&mut txn, a..=b)         -> IsamResult<RangeIter<K, V>>
 db.min_key(&mut txn)              -> IsamResult<Option<K>>
 db.max_key(&mut txn)              -> IsamResult<Option<K>>
-
-// Transaction control
-txn.commit()                      -> IsamResult<()>
-txn.rollback()                    -> IsamResult<()>
-// drop(txn) also rolls back if not yet committed
 
 // Secondary indices (register before any writes; re-register on every open)
 db.register_secondary_index(name, extractor)  -> IsamResult<SecondaryIndexHandle<K, V, SK>>
