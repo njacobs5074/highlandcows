@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::error::{IsamError, IsamResult};
 use crate::manager::TransactionManager;
-use crate::secondary_index::{DeriveKey, SecondaryIndexImpl};
+use crate::secondary_index::{AnySecondaryIndex, DeriveKey, SecondaryIndexImpl};
 use crate::storage::IsamStorage;
 use crate::store::RecordRef;
 use crate::transaction::Transaction;
@@ -65,10 +65,45 @@ where
 {
     // ── Lifecycle ────────────────────────────────────────────────────────── //
 
-    /// Create a new, empty database at `path`.
+    /// Return a builder for creating or opening a database with secondary indices.
+    ///
+    /// For databases without secondary indices, [`create`](Self::create) and
+    /// [`open`](Self::open) are simpler alternatives.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    ///
+    /// let city_idx = db.index::<CityIndex>("city");
+    /// ```
+    pub fn builder() -> IsamBuilder<K, V> {
+        IsamBuilder::default()
+    }
+
+    /// Create a new, empty database at `path` with no secondary indices.
     ///
     /// Two files are created: `<path>.idb` (data) and `<path>.idx` (index).
     /// Any existing files at those paths are truncated.
+    ///
+    /// To register secondary indices, use [`builder`](Self::builder) instead.
     ///
     /// # Example
     /// ```
@@ -84,7 +119,9 @@ where
         })
     }
 
-    /// Open an existing database at `path`.
+    /// Open an existing database at `path` with no secondary indices.
+    ///
+    /// To re-register secondary indices on open, use [`builder`](Self::builder) instead.
     ///
     /// # Example
     /// ```
@@ -99,6 +136,49 @@ where
         Ok(Self {
             manager: TransactionManager::open(path.as_ref())?,
         })
+    }
+
+    /// Return a [`SecondaryIndexHandle`] for the named index.
+    ///
+    /// The index must have been registered via
+    /// [`IsamBuilder::with_index`] when the database was created or opened.
+    /// No I/O is performed — the handle is just a typed wrapper around the
+    /// index name.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    ///
+    /// let city_idx = db.index::<CityIndex>("city");
+    ///
+    /// db.write(|txn| db.insert(txn, 1, &User { name: "Alice".into(), city: "London".into() })).unwrap();
+    ///
+    /// let results = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
+    /// assert_eq!(results.len(), 1);
+    /// ```
+    pub fn index<E: DeriveKey<V>>(&self, name: &str) -> SecondaryIndexHandle<K, V, E::Key> {
+        SecondaryIndexHandle {
+            name: name.to_owned(),
+            _phantom: PhantomData,
+        }
     }
 
     /// Begin a new transaction.
@@ -456,73 +536,6 @@ where
             buf_pos,
             next_leaf_id,
             end_bound,
-        })
-    }
-
-    // ── Secondary indices ─────────────────────────────────────────────────── //
-
-    /// Register a secondary index on this database.
-    ///
-    /// Must be called **before** any writes.  All secondary indices must be
-    /// re-registered each time the database is opened.
-    ///
-    /// Returns a [`SecondaryIndexHandle`] that can be used to query the index.
-    ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
-    ///
-    /// # Example
-    /// ```
-    /// # use tempfile::TempDir;
-    /// use serde::{Serialize, Deserialize};
-    /// use highlandcows_isam::{Isam, DeriveKey};
-    ///
-    /// #[derive(Serialize, Deserialize, Clone)]
-    /// struct User { name: String, city: String }
-    ///
-    /// struct CityIndex;
-    /// impl DeriveKey<User> for CityIndex {
-    ///     type Key = String;
-    ///     fn derive(u: &User) -> String { u.city.clone() }
-    /// }
-    ///
-    /// # let dir = TempDir::new().unwrap();
-    /// # let path = dir.path().join("db");
-    /// let db: Isam<u64, User> = Isam::create(&path).unwrap();
-    ///
-    /// // Register before any writes; re-register on every open.
-    /// let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
-    ///
-    /// let mut txn = db.begin_transaction().unwrap();
-    /// db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
-    /// txn.commit().unwrap();
-    ///
-    /// let mut txn = db.begin_transaction().unwrap();
-    /// let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
-    /// assert_eq!(results.len(), 1);
-    /// txn.commit().unwrap();
-    /// ```
-    pub fn register_secondary_index<E>(
-        &self,
-        name: &str,
-        _extractor: E,
-    ) -> IsamResult<SecondaryIndexHandle<K, V, E::Key>>
-    where
-        E: DeriveKey<V>,
-        K: Send,
-        V: Send,
-    {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
-        let si = SecondaryIndexImpl::<K, V, E>::create_or_open(name, &storage.base_path)?;
-        storage.secondary_indices.push(Box::new(si));
-        Ok(SecondaryIndexHandle {
-            name: name.to_owned(),
-            _phantom: PhantomData,
         })
     }
 
@@ -918,9 +931,9 @@ where
 
 // ── SecondaryIndexHandle ──────────────────────────────────────────────────── //
 
-/// An opaque handle to a registered secondary index, used for point lookups.
+/// An opaque handle to a secondary index, used for point lookups.
 ///
-/// Obtained from [`Isam::register_secondary_index`].
+/// Obtained from [`Isam::index`].
 pub struct SecondaryIndexHandle<K, V, SK> {
     name: String,
     _phantom: PhantomData<fn() -> (K, V, SK)>,
@@ -954,8 +967,11 @@ where
     ///
     /// # let dir = TempDir::new().unwrap();
     /// # let path = dir.path().join("db");
-    /// let db: Isam<u64, User> = Isam::create(&path).unwrap();
-    /// let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    /// let city_idx = db.index::<CityIndex>("city");
     ///
     /// let mut txn = db.begin_transaction().unwrap();
     /// db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -997,5 +1013,73 @@ where
             }
         }
         Ok(results)
+    }
+}
+
+// ── IsamBuilder ───────────────────────────────────────────────────────────── //
+
+/// Builder for creating or opening an [`Isam`] database with secondary indices.
+///
+/// Obtain a builder via [`Isam::builder`].  Call [`with_index`](Self::with_index)
+/// for each secondary index, then [`create`](Self::create) or [`open`](Self::open).
+pub struct IsamBuilder<K, V> {
+    factories: Vec<Box<dyn FnOnce(&Path) -> IsamResult<Box<dyn AnySecondaryIndex<K, V>>>>>,
+    _phantom: PhantomData<(K, V)>,
+}
+
+impl<K, V> Default for IsamBuilder<K, V> {
+    fn default() -> Self {
+        Self {
+            factories: Vec::new(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<K, V> IsamBuilder<K, V>
+where
+    K: Serialize + DeserializeOwned + Ord + Clone + Send + 'static,
+    V: Serialize + DeserializeOwned + Clone + Send + 'static,
+{
+    /// Register a secondary index to be opened or created alongside the database.
+    ///
+    /// `name` must be unique within a database. The extractor value is used only
+    /// to infer the `DeriveKey` implementation — it is not stored.
+    ///
+    /// After construction, obtain a typed handle for querying via [`Isam::index`].
+    pub fn with_index<E>(mut self, name: &str, _extractor: E) -> Self
+    where
+        E: DeriveKey<V>,
+    {
+        let name = name.to_owned();
+        self.factories.push(Box::new(move |base: &Path| {
+            let si = SecondaryIndexImpl::<K, V, E>::create_or_open(&name, base)?;
+            Ok(Box::new(si) as Box<dyn AnySecondaryIndex<K, V>>)
+        }));
+        self
+    }
+
+    /// Create a new, empty database at `path` with the registered indices.
+    pub fn create(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
+        let path = path.as_ref();
+        let mut storage = IsamStorage::create(path)?;
+        for factory in self.factories {
+            storage.secondary_indices.push(factory(path)?);
+        }
+        Ok(Isam {
+            manager: TransactionManager::from_storage(storage),
+        })
+    }
+
+    /// Open an existing database at `path` with the registered indices.
+    pub fn open(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
+        let path = path.as_ref();
+        let mut storage = IsamStorage::open(path)?;
+        for factory in self.factories {
+            storage.secondary_indices.push(factory(path)?);
+        }
+        Ok(Isam {
+            manager: TransactionManager::from_storage(storage),
+        })
     }
 }

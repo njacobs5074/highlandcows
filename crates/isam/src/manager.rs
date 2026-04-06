@@ -35,6 +35,12 @@ where
         })
     }
 
+    pub(crate) fn from_storage(storage: IsamStorage<K, V>) -> Self {
+        Self {
+            storage: Arc::new(Mutex::new(storage)),
+        }
+    }
+
     pub(crate) fn begin(&self) -> IsamResult<Transaction<'_, K, V>> {
         let guard = self.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
         Ok(Transaction::new(guard))
