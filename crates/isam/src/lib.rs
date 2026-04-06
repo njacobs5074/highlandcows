@@ -22,8 +22,8 @@
 //! ## Secondary indices
 //!
 //! Secondary indices let you look up records by a field other than the primary
-//! key.  Implement [`DeriveKey`] on a marker struct, then register it with
-//! [`Isam::register_secondary_index`] before any writes.
+//! key.  Implement [`DeriveKey`] on a marker struct, then register it via
+//! [`Isam::builder`] when creating or opening the database.
 //!
 //! ```
 //! # use tempfile::TempDir;
@@ -41,8 +41,11 @@
 //!
 //! # let dir = TempDir::new().unwrap();
 //! # let path = dir.path().join("users");
-//! let db: Isam<u64, User> = Isam::create(&path).unwrap();
-//! let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+//! let db = Isam::<u64, User>::builder()
+//!     .with_index("city", CityIndex)
+//!     .create(&path)
+//!     .unwrap();
+//! let city_idx = db.index::<CityIndex>("city");
 //!
 //! let mut txn = db.begin_transaction().unwrap();
 //! db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -76,6 +79,6 @@ pub mod transaction;
 
 // Re-export the main types at the crate root for convenience.
 pub use error::{IsamError, IsamResult};
-pub use isam::{Isam, IsamIter, RangeIter, SecondaryIndexHandle};
+pub use isam::{Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle};
 pub use secondary_index::DeriveKey;
 pub use transaction::Transaction;

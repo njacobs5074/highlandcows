@@ -798,14 +798,18 @@ impl DeriveKey<Person> for NameIndex {
 fn make_person_db() -> (TempDir, Isam<u32, Person>) {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("people");
-    let db = Isam::create(&path).unwrap();
+    let db = Isam::<u32, Person>::builder()
+        .with_index("city", CityIndex)
+        .with_index("name", NameIndex)
+        .create(&path)
+        .unwrap();
     (dir, db)
 }
 
 #[test]
 fn test_secondary_index_basic_lookup() {
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -824,7 +828,7 @@ fn test_secondary_index_basic_lookup() {
 #[test]
 fn test_secondary_index_non_unique() {
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -845,7 +849,7 @@ fn test_secondary_index_non_unique() {
 #[test]
 fn test_secondary_index_no_match_returns_empty() {
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -862,7 +866,7 @@ fn test_secondary_index_no_match_returns_empty() {
 fn test_secondary_index_update_same_sk() {
     // Updating a record without changing the secondary key — bucket stays intact.
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -885,7 +889,7 @@ fn test_secondary_index_update_changes_sk() {
     // Updating a record so its secondary key changes — old bucket loses the PK,
     // new bucket gains it.
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -908,7 +912,7 @@ fn test_secondary_index_update_changes_sk() {
 #[test]
 fn test_secondary_index_delete_removes_from_bucket() {
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -931,7 +935,7 @@ fn test_secondary_index_delete_removes_from_bucket() {
 fn test_secondary_index_rollback_insert() {
     // Rolling back an insert must also remove the PK from the secondary index.
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -948,7 +952,7 @@ fn test_secondary_index_rollback_insert() {
 fn test_secondary_index_rollback_update() {
     // Rolling back an update must restore the secondary index to its pre-update state.
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -971,7 +975,7 @@ fn test_secondary_index_rollback_update() {
 fn test_secondary_index_rollback_delete() {
     // Rolling back a delete must re-add the PK to the secondary index.
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
@@ -996,15 +1000,20 @@ fn test_secondary_index_reopen() {
     let path = dir.path().join("people");
 
     {
-        let db: Isam<u32, Person> = Isam::create(&path).unwrap();
-        let _city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+        let db = Isam::<u32, Person>::builder()
+            .with_index("city", CityIndex)
+            .create(&path)
+            .unwrap();
         let mut txn = db.begin_transaction().unwrap();
         db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();
         txn.commit().unwrap();
     }
 
-    let db: Isam<u32, Person> = Isam::open(&path).unwrap();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
+    let db = Isam::<u32, Person>::builder()
+        .with_index("city", CityIndex)
+        .open(&path)
+        .unwrap();
+    let city_idx = db.index::<CityIndex>("city");
 
     let mut txn = db.begin_transaction().unwrap();
     let results = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
@@ -1017,8 +1026,8 @@ fn test_secondary_index_reopen() {
 #[test]
 fn test_multiple_secondary_indices() {
     let (_dir, db) = make_person_db();
-    let city_idx = db.register_secondary_index("city", CityIndex).unwrap();
-    let name_idx = db.register_secondary_index("name", NameIndex).unwrap();
+    let city_idx = db.index::<CityIndex>("city");
+    let name_idx = db.index::<NameIndex>("name");
 
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &Person { name: "Alice".into(), city: "London".into() }).unwrap();

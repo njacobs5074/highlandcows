@@ -151,7 +151,7 @@ std::thread::spawn(move || {
 
 A secondary index lets you look up records by a field other than the primary key.
 Implement the `DeriveKey<V>` trait on a marker struct to describe what to index,
-then register it on the database before any writes.
+then register it via the builder when creating or opening the database.
 
 ```rust
 use serde::{Serialize, Deserialize};
@@ -171,10 +171,12 @@ impl DeriveKey<User> for CityIndex {
     fn derive(u: &User) -> String { u.city.clone() }
 }
 
-let db: Isam<u64, User> = Isam::create("/tmp/users")?;
+// Register indices via the builder — must also be done on every open.
+let db = Isam::<u64, User>::builder()
+    .with_index("city", CityIndex)
+    .create("/tmp/users")?;
 
-// Register before any writes. Re-register on every open.
-let city_idx = db.register_secondary_index("city", CityIndex)?;
+let city_idx = db.index::<CityIndex>("city");
 
 let mut txn = db.begin_transaction()?;
 db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
@@ -201,9 +203,16 @@ A few things to keep in mind:
 ### API
 
 ```rust
-// Lifecycle
+// Lifecycle (no secondary indices)
 Isam::create(path)          -> IsamResult<Self>
 Isam::open(path)            -> IsamResult<Self>
+
+// Lifecycle (with secondary indices)
+Isam::builder()                              -> IsamBuilder<K, V>
+builder.with_index(name, extractor)          -> IsamBuilder<K, V>
+builder.create(path)                         -> IsamResult<Isam<K, V>>
+builder.open(path)                           -> IsamResult<Isam<K, V>>
+db.index::<E>(name)                          -> SecondaryIndexHandle<K, V, E::Key>
 
 // Transaction helpers (recommended for single operations)
 db.write(|txn| { ... })     -> IsamResult<T>   // commits on Ok, rolls back on Err
@@ -227,9 +236,8 @@ db.range(&mut txn, a..=b)         -> IsamResult<RangeIter<K, V>>
 db.min_key(&mut txn)              -> IsamResult<Option<K>>
 db.max_key(&mut txn)              -> IsamResult<Option<K>>
 
-// Secondary indices (register before any writes; re-register on every open)
-db.register_secondary_index(name, extractor)  -> IsamResult<SecondaryIndexHandle<K, V, SK>>
-handle.lookup(&mut txn, &sk)                  -> IsamResult<Vec<(K, V)>>
+// Secondary index lookup
+handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
 
 // Offline administration (must not be called while a Transaction is live)
 db.compact()                      -> IsamResult<()>
