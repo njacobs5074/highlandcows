@@ -46,6 +46,29 @@ fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
 ///
 /// `Isam` is `Clone` — every clone is another handle to the same underlying
 /// storage.  Thread safety is provided by `TransactionManager`.
+///
+/// ## Creating and opening databases
+///
+/// For databases without secondary indices, use [`Isam::create`] and [`Isam::open`].
+/// To attach secondary indices at construction time, use [`Isam::builder`].
+///
+/// ## Running transactions
+///
+/// For simple single-operation writes or reads, use the [`write`](Self::write) and
+/// [`read`](Self::read) helpers — they handle begin/commit/rollback automatically:
+///
+/// ```
+/// # use tempfile::TempDir;
+/// # use highlandcows_isam::Isam;
+/// # let dir = TempDir::new().unwrap();
+/// # let path = dir.path().join("db");
+/// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+/// db.write(|txn| db.insert(txn, 1u32, &"hello".to_string())).unwrap();
+/// let val = db.read(|txn| db.get(txn, &1u32)).unwrap();
+/// assert_eq!(val, Some("hello".to_string()));
+/// ```
+///
+/// For multi-operation transactions, use [`begin_transaction`](Self::begin_transaction) directly.
 pub struct Isam<K, V> {
     manager: TransactionManager<K, V>,
 }
@@ -1060,6 +1083,29 @@ where
     }
 
     /// Create a new, empty database at `path` with the registered indices.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    /// ```
     pub fn create(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
         let path = path.as_ref();
         let mut storage = IsamStorage::create(path)?;
@@ -1072,6 +1118,35 @@ where
     }
 
     /// Open an existing database at `path` with the registered indices.
+    ///
+    /// Secondary indices must be registered again on every open — the index
+    /// name links the handle to the files on disk, but the extractor type is
+    /// not persisted.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .open(&path)
+    ///     .unwrap();
+    /// let city_idx = db.index::<CityIndex>("city");
+    /// ```
     pub fn open(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
         let path = path.as_ref();
         let mut storage = IsamStorage::open(path)?;

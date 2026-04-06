@@ -5,6 +5,9 @@
 //!
 //! ## Quick start
 //!
+//! Use the [`write`](Isam::write) and [`read`](Isam::read) helpers for simple
+//! single-operation transactions:
+//!
 //! ```
 //! # use tempfile::TempDir;
 //! use highlandcows_isam::Isam;
@@ -12,10 +15,23 @@
 //! # let dir = TempDir::new().unwrap();
 //! # let path = dir.path().join("db");
 //! let db: Isam<String, String> = Isam::create(&path).unwrap();
-//! let mut txn = db.begin_transaction().unwrap();
-//! db.insert(&mut txn, "hello".to_string(), &"world".to_string()).unwrap();
-//! let v = db.get(&mut txn, &"hello".to_string()).unwrap();
+//! db.write(|txn| db.insert(txn, "hello".to_string(), &"world".to_string())).unwrap();
+//! let v = db.read(|txn| db.get(txn, &"hello".to_string())).unwrap();
 //! assert_eq!(v, Some("world".to_string()));
+//! ```
+//!
+//! For multi-operation transactions, use [`begin_transaction`](Isam::begin_transaction) directly:
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! use highlandcows_isam::Isam;
+//!
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("db");
+//! # let db: Isam<String, String> = Isam::create(&path).unwrap();
+//! let mut txn = db.begin_transaction().unwrap();
+//! db.insert(&mut txn, "a".to_string(), &"1".to_string()).unwrap();
+//! db.insert(&mut txn, "b".to_string(), &"2".to_string()).unwrap();
 //! txn.commit().unwrap();
 //! ```
 //!
