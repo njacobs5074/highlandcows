@@ -1,6 +1,6 @@
 [package]
 name          = "highlandcows-isam"
-version       = "0.1.1"
+version       = "0.1.2"
 edition       = "2021"
 description   = "Persistent ISAM key/value store with ACID transactions, backed by an on-disk B-tree"
 license       = "MIT"

@@ -22,14 +22,14 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-highlandcows = "0.1.1"
+highlandcows = "0.1.2"
 ```
 
 Or, if you prefer to depend on the ISAM crate directly:
 
 ```toml
 [dependencies]
-highlandcows-isam = "0.1.1"
+highlandcows-isam = "0.1.2"
 ```
 
 Then import what you need:
