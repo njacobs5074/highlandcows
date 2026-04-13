@@ -1137,3 +1137,127 @@ fn test_read_returns_closure_value() {
 
     assert_eq!(count, 1);
 }
+
+// ── secondary_indices() listing ────────────────────────────────────────────── //
+
+#[test]
+fn test_secondary_indices_listing() {
+    let (_dir, db) = make_person_db();
+
+    let info = db.secondary_indices().unwrap();
+    assert_eq!(info.len(), 2);
+
+    let names: Vec<&str> = info.iter().map(|i| i.name.as_str()).collect();
+    assert!(names.contains(&"city"));
+    assert!(names.contains(&"name"));
+
+    let city = info.iter().find(|i| i.name == "city").unwrap();
+    assert!(city.extractor_type.contains("CityIndex"));
+
+    let name_idx = info.iter().find(|i| i.name == "name").unwrap();
+    assert!(name_idx.extractor_type.contains("NameIndex"));
+}
+
+#[test]
+fn test_secondary_indices_listing_empty() {
+    let (_dir, db): (_, Isam<u32, String>) = make_db();
+    let info = db.secondary_indices().unwrap();
+    assert!(info.is_empty());
+}
+
+// ── rebuild_index ─────────────────────────────────────────────────────────── //
+
+#[test]
+fn test_rebuild_index_restores_correct_results() {
+    // Create a database, insert records, then reopen with rebuild_index and
+    // verify the index produces correct lookup results.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("people");
+
+    {
+        let db = Isam::<u32, Person>::builder()
+            .with_index("city", CityIndex)
+            .create(&path)
+            .unwrap();
+        db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
+        db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "London".into() })).unwrap();
+        db.write(|txn| db.insert(txn, 3, &Person { name: "Carol".into(), city: "Paris".into()  })).unwrap();
+    }
+
+    let db = Isam::<u32, Person>::builder()
+        .with_index("city", CityIndex)
+        .rebuild_index("city")
+        .open(&path)
+        .unwrap();
+    let city_idx = db.index::<CityIndex>("city");
+
+    let mut results = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
+    results.sort_by_key(|(k, _)| *k);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].0, 1);
+    assert_eq!(results[1].0, 2);
+
+    let paris = db.read(|txn| city_idx.lookup(txn, &"Paris".to_string())).unwrap();
+    assert_eq!(paris.len(), 1);
+    assert_eq!(paris[0].0, 3);
+}
+
+#[test]
+fn test_rebuild_index_selective() {
+    // Only the city index is rebuilt; the name index is reopened normally.
+    // Both should produce correct results afterward.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("people");
+
+    {
+        let db = Isam::<u32, Person>::builder()
+            .with_index("city", CityIndex)
+            .with_index("name", NameIndex)
+            .create(&path)
+            .unwrap();
+        db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
+        db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "Paris".into()  })).unwrap();
+    }
+
+    let db = Isam::<u32, Person>::builder()
+        .with_index("city", CityIndex)
+        .with_index("name", NameIndex)
+        .rebuild_index("city")   // only rebuild city; name reopened as-is
+        .open(&path)
+        .unwrap();
+
+    let city_idx = db.index::<CityIndex>("city");
+    let name_idx = db.index::<NameIndex>("name");
+
+    let london = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
+    assert_eq!(london.len(), 1);
+    assert_eq!(london[0].0, 1);
+
+    let alice = db.read(|txn| name_idx.lookup(txn, &"Alice".to_string())).unwrap();
+    assert_eq!(alice.len(), 1);
+    assert_eq!(alice[0].0, 1);
+}
+
+#[test]
+fn test_rebuild_index_empty_database() {
+    // Rebuild on an empty database should succeed and produce an empty index.
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("people");
+
+    {
+        Isam::<u32, Person>::builder()
+            .with_index("city", CityIndex)
+            .create(&path)
+            .unwrap();
+    }
+
+    let db = Isam::<u32, Person>::builder()
+        .with_index("city", CityIndex)
+        .rebuild_index("city")
+        .open(&path)
+        .unwrap();
+    let city_idx = db.index::<CityIndex>("city");
+
+    let results = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
+    assert!(results.is_empty());
+}

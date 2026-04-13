@@ -7,6 +7,7 @@
 ///
 /// - `K` — key type; serializable, deserializable, ordered, cheap to clone.
 /// - `V` — value type; serializable and deserializable.
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
@@ -202,6 +203,50 @@ where
             name: name.to_owned(),
             _phantom: PhantomData,
         }
+    }
+
+    /// Return information about all secondary indices registered on this database.
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    ///
+    /// let indices = db.secondary_indices().unwrap();
+    /// assert_eq!(indices.len(), 1);
+    /// assert_eq!(indices[0].name, "city");
+    /// ```
+    pub fn secondary_indices(&self) -> IsamResult<Vec<IndexInfo>> {
+        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        Ok(guard
+            .secondary_indices
+            .iter()
+            .map(|si| IndexInfo {
+                name: si.name().to_owned(),
+                extractor_type: si.extractor_type_name(),
+            })
+            .collect())
     }
 
     /// Begin a new transaction.
@@ -1039,6 +1084,23 @@ where
     }
 }
 
+// ── IndexInfo ─────────────────────────────────────────────────────────────── //
+
+/// Metadata about a registered secondary index.
+///
+/// Returned by [`Isam::secondary_indices`].
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    /// The name the index was registered under.
+    pub name: String,
+    /// Fully-qualified type name of the [`DeriveKey`] extractor implementation.
+    ///
+    /// Provided by [`std::any::type_name`] — suitable for display and logging,
+    /// but not for persistent storage (the value may change across compiler
+    /// versions or if the type is renamed or moved).
+    pub extractor_type: &'static str,
+}
+
 // ── IsamBuilder ───────────────────────────────────────────────────────────── //
 
 /// Builder for creating or opening an [`Isam`] database with secondary indices.
@@ -1046,7 +1108,8 @@ where
 /// Obtain a builder via [`Isam::builder`].  Call [`with_index`](Self::with_index)
 /// for each secondary index, then [`create`](Self::create) or [`open`](Self::open).
 pub struct IsamBuilder<K, V> {
-    factories: Vec<Box<dyn FnOnce(&Path) -> IsamResult<Box<dyn AnySecondaryIndex<K, V>>>>>,
+    factories: Vec<(String, Box<dyn FnOnce(&Path) -> IsamResult<Box<dyn AnySecondaryIndex<K, V>>>>)>,
+    rebuild: HashSet<String>,
     _phantom: PhantomData<(K, V)>,
 }
 
@@ -1054,6 +1117,7 @@ impl<K, V> Default for IsamBuilder<K, V> {
     fn default() -> Self {
         Self {
             factories: Vec::new(),
+            rebuild: HashSet::new(),
             _phantom: PhantomData,
         }
     }
@@ -1074,11 +1138,54 @@ where
     where
         E: DeriveKey<V>,
     {
-        let name = name.to_owned();
-        self.factories.push(Box::new(move |base: &Path| {
-            let si = SecondaryIndexImpl::<K, V, E>::create_or_open(&name, base)?;
+        let owned = name.to_owned();
+        let owned2 = owned.clone();
+        self.factories.push((owned, Box::new(move |base: &Path| {
+            let si = SecondaryIndexImpl::<K, V, E>::create_or_open(&owned2, base)?;
             Ok(Box::new(si) as Box<dyn AnySecondaryIndex<K, V>>)
-        }));
+        })));
+        self
+    }
+
+    /// Mark a secondary index to be fully rebuilt from primary data during [`open`](Self::open).
+    ///
+    /// The existing `.sidb`/`.sidx` files for `name` are deleted at open time
+    /// and repopulated by scanning all primary records.  The index must also be
+    /// registered via [`with_index`](Self::with_index).
+    ///
+    /// # When to use
+    ///
+    /// Call this whenever the [`DeriveKey`] extractor logic has changed and the
+    /// on-disk index is therefore stale.  Without a rebuild, queries against a
+    /// stale index will silently return incorrect results.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
+    /// // Reopen and force a full rebuild of the "city" index.
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .rebuild_index("city")
+    ///     .open(&path)
+    ///     .unwrap();
+    /// ```
+    pub fn rebuild_index(mut self, name: &str) -> Self {
+        self.rebuild.insert(name.to_owned());
         self
     }
 
@@ -1109,7 +1216,7 @@ where
     pub fn create(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
         let path = path.as_ref();
         let mut storage = IsamStorage::create(path)?;
-        for factory in self.factories {
+        for (_name, factory) in self.factories {
             storage.secondary_indices.push(factory(path)?);
         }
         Ok(Isam {
@@ -1148,11 +1255,47 @@ where
     /// let city_idx = db.index::<CityIndex>("city");
     /// ```
     pub fn open(self, path: impl AsRef<Path>) -> IsamResult<Isam<K, V>> {
+        use crate::secondary_index::{sidb_path, sidx_path};
+
         let path = path.as_ref();
         let mut storage = IsamStorage::open(path)?;
-        for factory in self.factories {
+
+        // Delete stale files for any indices marked for rebuild so the
+        // factories below recreate them fresh.
+        for name in &self.rebuild {
+            let sidb = sidb_path(path, name);
+            let sidx = sidx_path(path, name);
+            if sidb.exists() { std::fs::remove_file(&sidb)?; }
+            if sidx.exists() { std::fs::remove_file(&sidx)?; }
+        }
+
+        for (_name, factory) in self.factories {
             storage.secondary_indices.push(factory(path)?);
         }
+
+        // Populate rebuilt indices by scanning all primary records.
+        if !self.rebuild.is_empty() {
+            let first_id = storage.index.first_leaf_id()?;
+            let mut current_id = first_id;
+            while current_id != 0 {
+                let (entries, next_id) = storage.index.read_leaf(current_id)?;
+                for (key, rec) in &entries {
+                    let value: V = storage.store.read_value(*rec)?;
+                    for si in &mut storage.secondary_indices {
+                        if self.rebuild.contains(si.name()) {
+                            si.on_insert(key, &value)?;
+                        }
+                    }
+                }
+                current_id = next_id;
+            }
+            for si in &mut storage.secondary_indices {
+                if self.rebuild.contains(si.name()) {
+                    si.fsync()?;
+                }
+            }
+        }
+
         Ok(Isam {
             manager: TransactionManager::from_storage(storage),
         })
