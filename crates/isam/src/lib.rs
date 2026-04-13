@@ -63,16 +63,54 @@
 //!     .unwrap();
 //! let city_idx = db.index::<CityIndex>("city");
 //!
-//! let mut txn = db.begin_transaction().unwrap();
-//! db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() }).unwrap();
-//! db.insert(&mut txn, 2, &User { name: "Bob".into(),   city: "London".into() }).unwrap();
-//! db.insert(&mut txn, 3, &User { name: "Carol".into(), city: "Paris".into()  }).unwrap();
-//! txn.commit().unwrap();
+//! db.write(|txn| {
+//!     db.insert(txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
+//!     db.insert(txn, 2, &User { name: "Bob".into(),   city: "London".into() })?;
+//!     db.insert(txn, 3, &User { name: "Carol".into(), city: "Paris".into()  })
+//! }).unwrap();
 //!
-//! let mut txn = db.begin_transaction().unwrap();
-//! let londoners = city_idx.lookup(&mut txn, &"London".to_string()).unwrap();
+//! let londoners = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
 //! assert_eq!(londoners.len(), 2);
-//! txn.commit().unwrap();
+//! ```
+//!
+//! ### Inspecting registered indices and rebuilding
+//!
+//! Use [`Isam::secondary_indices`] to list the indices registered on an open
+//! database.  To rebuild a stale index — for example after the [`DeriveKey`]
+//! extractor logic has changed — drop the current handle and reopen with
+//! [`IsamBuilder::rebuild_index`]:
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! # use serde::{Serialize, Deserialize};
+//! # use highlandcows_isam::{Isam, DeriveKey};
+//! # #[derive(Serialize, Deserialize, Clone)]
+//! # struct User { name: String, city: String }
+//! # struct CityIndex;
+//! # impl DeriveKey<User> for CityIndex {
+//! #     type Key = String;
+//! #     fn derive(u: &User) -> String { u.city.clone() }
+//! # }
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("users");
+//! # Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
+//! // Inspect which indices are registered.
+//! let indices = {
+//!     let db = Isam::<u64, User>::builder()
+//!         .with_index("city", CityIndex)
+//!         .open(&path)
+//!         .unwrap();
+//!     db.secondary_indices().unwrap()
+//!     // db is fully dropped here — all file handles released.
+//! };
+//! assert_eq!(indices[0].name, "city");
+//!
+//! // Reopen, forcing a full rebuild of the "city" index.
+//! let db = Isam::<u64, User>::builder()
+//!     .with_index("city", CityIndex)
+//!     .rebuild_index("city")
+//!     .open(&path)
+//!     .unwrap();
 //! ```
 //!
 //! ## Files on disk
@@ -95,6 +133,6 @@ pub mod transaction;
 
 // Re-export the main types at the crate root for convenience.
 pub use error::{IsamError, IsamResult};
-pub use isam::{Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle};
+pub use isam::{IndexInfo, Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle};
 pub use secondary_index::DeriveKey;
 pub use transaction::Transaction;

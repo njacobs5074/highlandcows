@@ -76,6 +76,12 @@ pub(crate) trait AnySecondaryIndex<K, V>: Send {
 
     fn fsync(&mut self) -> IsamResult<()>;
     fn name(&self) -> &str;
+
+    /// Return the fully-qualified type name of the `DeriveKey` extractor.
+    ///
+    /// Uses [`std::any::type_name`] — suitable for display, not for persistent
+    /// storage (the value can change between compiler versions or refactors).
+    fn extractor_type_name(&self) -> &'static str;
 }
 
 // ── SecondaryIndexImpl ────────────────────────────────────────────────────── //
@@ -228,6 +234,10 @@ where
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn extractor_type_name(&self) -> &'static str {
+        std::any::type_name::<E>()
     }
 }
 
