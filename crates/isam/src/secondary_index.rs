@@ -82,6 +82,17 @@ pub(crate) trait AnySecondaryIndex<K, V>: Send {
     /// Uses [`std::any::type_name`] — suitable for display, not for persistent
     /// storage (the value can change between compiler versions or refactors).
     fn extractor_type_name(&self) -> &'static str;
+
+    /// Return the index schema version stored in the `.sidx` metadata.
+    fn stored_schema_version(&self) -> u32;
+
+    /// Write `version` into the `.sidx` metadata as the index schema version.
+    fn persist_schema_version(&mut self, version: u32) -> IsamResult<()>;
+
+    /// Discard all index data and recreate fresh, empty index files in place.
+    ///
+    /// Used by `migrate_index` to clear the index before repopulating it.
+    fn reset(&mut self) -> IsamResult<()>;
 }
 
 // ── SecondaryIndexImpl ────────────────────────────────────────────────────── //
@@ -95,6 +106,7 @@ where
     E: DeriveKey<V>,
 {
     name: String,
+    base: PathBuf,
     store: DataStore,
     btree: BTree<E::Key>,
     _phantom: PhantomData<(K, V)>,
@@ -110,6 +122,7 @@ where
     pub(crate) fn create(name: &str, base: &Path) -> IsamResult<Self> {
         Ok(Self {
             name: name.to_owned(),
+            base: base.to_path_buf(),
             store: DataStore::create(&sidb_path(base, name))?,
             btree: BTree::create(&sidx_path(base, name))?,
             _phantom: PhantomData,
@@ -120,6 +133,7 @@ where
     pub(crate) fn open(name: &str, base: &Path) -> IsamResult<Self> {
         Ok(Self {
             name: name.to_owned(),
+            base: base.to_path_buf(),
             store: DataStore::open(&sidb_path(base, name))?,
             btree: BTree::open(&sidx_path(base, name))?,
             _phantom: PhantomData,
@@ -238,6 +252,20 @@ where
 
     fn extractor_type_name(&self) -> &'static str {
         std::any::type_name::<E>()
+    }
+
+    fn stored_schema_version(&self) -> u32 {
+        self.btree.index_schema_version()
+    }
+
+    fn persist_schema_version(&mut self, version: u32) -> IsamResult<()> {
+        self.btree.set_index_schema_version(version)
+    }
+
+    fn reset(&mut self) -> IsamResult<()> {
+        self.store = DataStore::create(&sidb_path(&self.base, &self.name))?;
+        self.btree = BTree::create(&sidx_path(&self.base, &self.name))?;
+        Ok(())
     }
 }
 

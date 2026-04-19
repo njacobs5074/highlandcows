@@ -73,12 +73,16 @@
 //! assert_eq!(londoners.len(), 2);
 //! ```
 //!
-//! ### Inspecting registered indices and rebuilding
+//! ### Inspecting registered indices, rebuilding, and migrating
 //!
 //! Use [`Isam::secondary_indices`] to list the indices registered on an open
-//! database.  To rebuild a stale index — for example after the [`DeriveKey`]
-//! extractor logic has changed — drop the current handle and reopen with
-//! [`IsamBuilder::rebuild_index`]:
+//! database.  Each [`IndexInfo`] entry includes the index name, the
+//! fully-qualified extractor type name, and a `schema_version` that reflects
+//! the last [`migrate_index`](Isam::migrate_index) call.
+//!
+//! To rebuild a stale index from primary data without versioning — for example
+//! after the [`DeriveKey`] extractor logic has changed — drop the current handle
+//! and reopen with [`IsamBuilder::rebuild_index`]:
 //!
 //! ```
 //! # use tempfile::TempDir;
@@ -111,6 +115,40 @@
 //!     .rebuild_index("city")
 //!     .open(&path)
 //!     .unwrap();
+//! ```
+//!
+//! To migrate a secondary index with a version bump — for instance when the
+//! derivation logic changes and you want to record that the migration was
+//! applied — use [`Isam::migrate_index`] on a live database handle.  Pass a closure that
+//! transforms each primary value before [`DeriveKey::derive`] runs; pass the
+//! identity closure (`|v| Ok(v)`) for a plain rebuild.  Primary records are
+//! not modified.
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! # use serde::{Serialize, Deserialize};
+//! # use highlandcows_isam::{Isam, DeriveKey};
+//! # #[derive(Serialize, Deserialize, Clone)]
+//! # struct User { name: String, city: String }
+//! # struct CityIndex;
+//! # impl DeriveKey<User> for CityIndex {
+//! #     type Key = String;
+//! #     // derive now normalizes to lowercase
+//! #     fn derive(u: &User) -> String { u.city.to_lowercase() }
+//! # }
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("users");
+//! # let db = Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
+//! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
+//! // Rebuild the city index, normalizing city names to lowercase so the
+//! // on-disk data matches the updated DeriveKey logic.  Bumps schema_version to 1.
+//! db.migrate_index("city", 1, |mut u: User| {
+//!     u.city = u.city.to_lowercase();
+//!     Ok(u)
+//! }).unwrap();
+//!
+//! let info = db.secondary_indices().unwrap();
+//! assert_eq!(info[0].schema_version, 1);
 //! ```
 //!
 //! ## Files on disk

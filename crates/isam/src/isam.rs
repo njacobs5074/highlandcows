@@ -245,6 +245,7 @@ where
             .map(|si| IndexInfo {
                 name: si.name().to_owned(),
                 extractor_type: si.extractor_type_name(),
+                schema_version: si.stored_schema_version(),
             })
             .collect())
     }
@@ -653,6 +654,119 @@ where
     pub fn val_schema_version(&self) -> IsamResult<u32> {
         let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
         Ok(guard.index.val_schema_version())
+    }
+
+    // ── Secondary index migration ─────────────────────────────────────────── //
+
+    /// Migrate a secondary index to a new schema version.
+    ///
+    /// This is the secondary index counterpart to [`migrate_values`](Self::migrate_values)
+    /// and [`migrate_keys`](Self::migrate_keys).  Use it when the [`DeriveKey`]
+    /// derivation logic for a named secondary index has changed and the on-disk
+    /// index needs to be rebuilt to match.
+    ///
+    /// The named secondary index is cleared and repopulated by scanning all
+    /// primary records.  For each record, `f` is applied to the stored value
+    /// before the registered [`DeriveKey`] extractor derives the secondary key,
+    /// letting you adapt the effective input to the updated derivation logic.
+    /// Pass the identity closure (`|v| Ok(v)`) for a plain rebuild with no
+    /// value transformation.
+    ///
+    /// After the rebuild, `new_version` is written into the `.sidx` metadata
+    /// so that [`Isam::secondary_indices`] reflects the current migration state
+    /// via [`IndexInfo::schema_version`].
+    ///
+    /// **Primary records are not modified.**  Only the named secondary index
+    /// is affected; other secondary indices are left untouched.
+    ///
+    /// # Deadlock warning
+    /// Acquires the database lock internally.  Must not be called while a
+    /// [`Transaction`] is live on the same thread.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     // derive now normalizes to lowercase
+    ///     fn derive(u: &User) -> String { u.city.to_lowercase() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("users");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    ///
+    /// db.write(|txn| db.insert(txn, 1, &User { name: "Alice".into(), city: "London".into() }))
+    ///     .unwrap();
+    ///
+    /// // Rebuild the "city" index, normalizing city names to lowercase
+    /// // so the index matches the updated DeriveKey logic.
+    /// db.migrate_index("city", 1, |mut u: User| {
+    ///     u.city = u.city.to_lowercase();
+    ///     Ok(u)
+    /// }).unwrap();
+    ///
+    /// let info = db.secondary_indices().unwrap();
+    /// assert_eq!(info[0].schema_version, 1);
+    /// ```
+    pub fn migrate_index<F>(&self, name: &str, new_version: u32, mut f: F) -> IsamResult<()>
+    where
+        F: FnMut(V) -> IsamResult<V>,
+    {
+        let mut storage = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+
+        // Scan all primary records first, before mutating the index.
+        let mut records: Vec<(K, V)> = Vec::new();
+        let first_id = storage.index.first_leaf_id()?;
+        let mut current_id = first_id;
+        while current_id != 0 {
+            let (entries, next_id) = storage.index.read_leaf(current_id)?;
+            for (key, rec) in &entries {
+                let value: V = storage.store.read_value(*rec)?;
+                records.push((key.clone(), value));
+            }
+            current_id = next_id;
+        }
+
+        // Find the target index and reset it.
+        let si = storage
+            .secondary_indices
+            .iter_mut()
+            .find(|si| si.name() == name)
+            .ok_or_else(|| IsamError::IndexNotFound(name.to_owned()))?;
+        si.reset()?;
+
+        // Repopulate the index using f(value) as input to DeriveKey::derive.
+        for (key, value) in records {
+            let effective = f(value)?;
+            let si = storage
+                .secondary_indices
+                .iter_mut()
+                .find(|si| si.name() == name)
+                .unwrap();
+            si.on_insert(&key, &effective)?;
+        }
+
+        // Persist the new schema version.
+        let si = storage
+            .secondary_indices
+            .iter_mut()
+            .find(|si| si.name() == name)
+            .unwrap();
+        si.persist_schema_version(new_version)?;
+        si.fsync()?;
+
+        Ok(())
     }
 
     // ── Structural operations ─────────────────────────────────────────────── //
@@ -1099,6 +1213,12 @@ pub struct IndexInfo {
     /// but not for persistent storage (the value may change across compiler
     /// versions or if the type is renamed or moved).
     pub extractor_type: &'static str,
+    /// The index schema version stored in the `.sidx` metadata.
+    ///
+    /// Set to `0` for newly created indices and updated by
+    /// [`Isam::migrate_index`].  Use this to confirm that a migration has
+    /// been applied, or to detect indices that predate schema versioning.
+    pub schema_version: u32,
 }
 
 // ── IsamBuilder ───────────────────────────────────────────────────────────── //

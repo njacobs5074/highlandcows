@@ -408,6 +408,15 @@ where
         self.pager.flush_meta()
     }
 
+    pub fn index_schema_version(&self) -> u32 {
+        self.pager.meta.index_schema_version
+    }
+
+    pub fn set_index_schema_version(&mut self, v: u32) -> IsamResult<()> {
+        self.pager.meta.index_schema_version = v;
+        self.pager.flush_meta()
+    }
+
     pub fn flush(&mut self) -> IsamResult<()> {
         self.pager.flush()
     }

@@ -32,6 +32,10 @@ pub enum IsamError {
     /// A thread panicked while holding the database lock.
     #[error("mutex poisoned: a thread panicked while holding the database lock")]
     LockPoisoned,
+
+    /// No secondary index with the given name is registered on this database.
+    #[error("secondary index not found: {0}")]
+    IndexNotFound(String),
 }
 
 /// Convenience alias — every fallible function in this crate returns this.
