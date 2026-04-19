@@ -658,18 +658,26 @@ where
 
     // ── Secondary index migration ─────────────────────────────────────────── //
 
-    /// Rebuild a secondary index by re-deriving each entry from the stored
-    /// primary values, optionally transforming each value through `f` first.
+    /// Migrate a secondary index to a new schema version.
     ///
-    /// `f` is applied to each primary record value before the registered
-    /// [`DeriveKey`] extractor derives the secondary key.  Pass the identity
-    /// closure (`|v| Ok(v)`) to rebuild from the values as-is.
+    /// This is the secondary index counterpart to [`migrate_values`](Self::migrate_values)
+    /// and [`migrate_keys`](Self::migrate_keys).  Use it when the [`DeriveKey`]
+    /// derivation logic for a named secondary index has changed and the on-disk
+    /// index needs to be rebuilt to match.
+    ///
+    /// The named secondary index is cleared and repopulated by scanning all
+    /// primary records.  For each record, `f` is applied to the stored value
+    /// before the registered [`DeriveKey`] extractor derives the secondary key,
+    /// letting you adapt the effective input to the updated derivation logic.
+    /// Pass the identity closure (`|v| Ok(v)`) for a plain rebuild with no
+    /// value transformation.
     ///
     /// After the rebuild, `new_version` is written into the `.sidx` metadata
-    /// so that [`Isam::secondary_indices`] reflects the current migration state.
+    /// so that [`Isam::secondary_indices`] reflects the current migration state
+    /// via [`IndexInfo::schema_version`].
     ///
     /// **Primary records are not modified.**  Only the named secondary index
-    /// is affected.
+    /// is affected; other secondary indices are left untouched.
     ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a

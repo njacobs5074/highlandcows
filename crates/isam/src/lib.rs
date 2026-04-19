@@ -117,9 +117,9 @@
 //!     .unwrap();
 //! ```
 //!
-//! To migrate an index with a version bump — for instance when the derivation
-//! logic changes and you want to record that the migration was applied — use
-//! [`Isam::migrate_index`] on a live database handle.  Pass a closure that
+//! To migrate a secondary index with a version bump — for instance when the
+//! derivation logic changes and you want to record that the migration was
+//! applied — use [`Isam::migrate_index`] on a live database handle.  Pass a closure that
 //! transforms each primary value before [`DeriveKey::derive`] runs; pass the
 //! identity closure (`|v| Ok(v)`) for a plain rebuild.  Primary records are
 //! not modified.
