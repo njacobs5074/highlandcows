@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -40,6 +41,14 @@ fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
         Bound::Unbounded => Bound::Unbounded,
     }
 }
+
+// ── Constants ────────────────────────────────────────────────────────────── //
+
+/// Default timeout for [`Isam::as_single_user`].
+///
+/// 30 seconds — long enough for typical in-flight transactions to finish,
+/// short enough to surface hung transactions rather than waiting forever.
+pub const DEFAULT_SINGLE_USER_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Isam ─────────────────────────────────────────────────────────────────── //
 
@@ -162,6 +171,57 @@ where
         })
     }
 
+    // ── Single-user mode ─────────────────────────────────────────────────── //
+
+    /// Execute a closure in single-user mode.
+    ///
+    /// Sets the single-user flag immediately, then waits up to `timeout` for any
+    /// in-flight transaction on another thread to finish.  Once exclusive access
+    /// is confirmed, `f` is called.  Any other thread that attempts any database
+    /// operation while `f` is running receives [`IsamError::SingleUserMode`]
+    /// immediately (no blocking).  The calling thread can continue to use `self`
+    /// normally inside `f`.
+    ///
+    /// Single-user mode is intended for administrative operations — compaction,
+    /// schema migration, and similar tasks — where you need to ensure no other
+    /// thread modifies the database concurrently.  It is an in-process
+    /// mechanism only; multi-process exclusion is not supported.
+    ///
+    /// The return value of `f` is forwarded to the caller.  Single-user mode is
+    /// released when `f` returns, including if `f` returns an error or panics.
+    ///
+    /// # Errors
+    ///
+    /// - [`IsamError::SingleUserMode`] — single-user mode is already active
+    ///   (e.g. called recursively, or another thread holds it).
+    /// - [`IsamError::Timeout`] — an in-flight transaction did not finish within
+    ///   `timeout`.  This also occurs if the calling thread itself holds an open
+    ///   [`Transaction`]: the transaction holds the storage lock, so the spin
+    ///   will never succeed and the call will time out.  Commit or roll back all
+    ///   transactions on the calling thread before calling `as_single_user`.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for i in 0u32..5 { db.insert(&mut txn, i, &i.to_string()).unwrap(); }
+    /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// // Run compact exclusively — no other thread can touch the database.
+    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || db.compact()).unwrap();
+    /// ```
+    pub fn as_single_user<F, T>(&self, timeout: Duration, f: F) -> IsamResult<T>
+    where
+        F: FnOnce() -> IsamResult<T>,
+    {
+        let _guard = self.manager.enter_single_user_mode(timeout)?;
+        f()
+    }
+
     /// Return a [`SecondaryIndexHandle`] for the named index.
     ///
     /// The index must have been registered via
@@ -238,7 +298,7 @@ where
     /// assert_eq!(indices[0].name, "city");
     /// ```
     pub fn secondary_indices(&self) -> IsamResult<Vec<IndexInfo>> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard
             .secondary_indices
             .iter()
@@ -629,7 +689,7 @@ where
     /// assert_eq!(db.key_schema_version().unwrap(), 0);
     /// ```
     pub fn key_schema_version(&self) -> IsamResult<u32> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard.index.key_schema_version())
     }
 
@@ -652,7 +712,7 @@ where
     /// assert_eq!(db.val_schema_version().unwrap(), 0);
     /// ```
     pub fn val_schema_version(&self) -> IsamResult<u32> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard.index.val_schema_version())
     }
 
@@ -723,7 +783,7 @@ where
     where
         F: FnMut(V) -> IsamResult<V>,
     {
-        let mut storage = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         // Scan all primary records first, before mutating the index.
         let mut records: Vec<(K, V)> = Vec::new();
@@ -797,11 +857,7 @@ where
     /// db.compact().unwrap();
     /// ```
     pub fn compact(&self) -> IsamResult<()> {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let first_id = storage.index.first_leaf_id()?;
@@ -875,11 +931,7 @@ where
         V2: Serialize + DeserializeOwned + Clone + 'static,
         F: FnMut(V) -> IsamResult<V2>,
     {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let base_path = storage.base_path.clone();
         let key_schema_v = storage.index.key_schema_version();
@@ -962,11 +1014,7 @@ where
         K2: Serialize + DeserializeOwned + Ord + Clone + 'static,
         F: FnMut(K) -> IsamResult<K2>,
     {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let base_path = storage.base_path.clone();
         let val_schema_v = storage.index.val_schema_version();
