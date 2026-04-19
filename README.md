@@ -141,11 +141,11 @@ std::thread::spawn(move || {
 });
 ```
 
-> **Note:** `compact()`, `migrate_values()`, `migrate_keys()`, `key_schema_version()`, and
-> `val_schema_version()` all acquire the database lock internally. They must not be called
-> while a `Transaction` is live on the same thread, as this will deadlock. These are
-> intended as offline administration operations — commit or roll back all open transactions
-> before calling them.
+> **Note:** `compact()`, `migrate_values()`, `migrate_keys()`, `migrate_index()`,
+> `key_schema_version()`, `val_schema_version()`, and `secondary_indices()` all acquire
+> the database lock internally. They must not be called while a `Transaction` is live on
+> the same thread, as this will deadlock. These are intended as offline administration
+> operations — commit or roll back all open transactions before calling them.
 
 ### Secondary indices
 
@@ -178,17 +178,16 @@ let db = Isam::<u64, User>::builder()
 
 let city_idx = db.index::<CityIndex>("city");
 
-let mut txn = db.begin_transaction()?;
-db.insert(&mut txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
-db.insert(&mut txn, 2, &User { name: "Bob".into(),   city: "London".into() })?;
-db.insert(&mut txn, 3, &User { name: "Carol".into(), city: "Paris".into()  })?;
-txn.commit()?;
+db.write(|txn| {
+    db.insert(txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
+    db.insert(txn, 2, &User { name: "Bob".into(),   city: "London".into() })?;
+    db.insert(txn, 3, &User { name: "Carol".into(), city: "Paris".into()  })?;
+    Ok(())
+})?;
 
 // Look up all users in London.
-let mut txn = db.begin_transaction()?;
-let londoners = city_idx.lookup(&mut txn, &"London".to_string())?;
+let londoners = db.read(|txn| city_idx.lookup(txn, &"London".to_string()))?;
 // → [(1, User{Alice, London}), (2, User{Bob, London})]
-txn.commit()?;
 ```
 
 A few things to keep in mind:
@@ -198,7 +197,7 @@ A few things to keep in mind:
 - **Transactional** — secondary index changes are rolled back when a transaction rolls back.
 - **Persistent** — index files survive process restarts; re-register the same indices on every `open`.
 - **Composite indices** — not yet built in, but achievable by deriving a tuple key: `type Key = (String, u32)`.
-- **No schema evolution support** — `migrate_values()` and `migrate_keys()` rewrite only the primary store; secondary index files are left untouched. If a value migration changes the fields that a secondary index derives its key from, the index will silently become stale. Drop and rebuild secondary index files manually after any such migration.
+- **Schema evolution** — use `migrate_index(name, version, f)` to rebuild a secondary index while bumping its `schema_version`.  The closure `f` transforms each primary value before `DeriveKey::derive` runs, letting you adapt the index to updated derivation logic.  Primary records are not modified.  For a plain rebuild without versioning, reopen with `builder.rebuild_index(name)` instead.
 
 ### API
 
@@ -210,6 +209,7 @@ Isam::open(path)            -> IsamResult<Self>
 // Lifecycle (with secondary indices)
 Isam::builder()                              -> IsamBuilder<K, V>
 builder.with_index(name, extractor)          -> IsamBuilder<K, V>
+builder.rebuild_index(name)                  -> IsamBuilder<K, V>
 builder.create(path)                         -> IsamResult<Isam<K, V>>
 builder.open(path)                           -> IsamResult<Isam<K, V>>
 db.index::<E>(name)                          -> SecondaryIndexHandle<K, V, E::Key>
@@ -236,8 +236,9 @@ db.range(&mut txn, a..=b)         -> IsamResult<RangeIter<K, V>>
 db.min_key(&mut txn)              -> IsamResult<Option<K>>
 db.max_key(&mut txn)              -> IsamResult<Option<K>>
 
-// Secondary index lookup
+// Secondary index lookup and inspection
 handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
+db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Offline administration (must not be called while a Transaction is live)
 db.compact()                      -> IsamResult<()>
@@ -245,6 +246,7 @@ db.key_schema_version()           -> IsamResult<u32>
 db.val_schema_version()           -> IsamResult<u32>
 db.migrate_values(version, f)     -> IsamResult<Isam<K, V2>>
 db.migrate_keys(version, f)       -> IsamResult<Isam<K2, V>>
+db.migrate_index(name, version, f) -> IsamResult<()>
 ```
 
 ### Error types
@@ -257,6 +259,7 @@ db.migrate_keys(version, f)       -> IsamResult<Isam<K2, V>>
 | `IsamError::Io(_)` | underlying file I/O error |
 | `IsamError::Bincode(_)` | serialization/deserialization failure |
 | `IsamError::CorruptIndex(_)` | index file has an invalid magic number or page type |
+| `IsamError::IndexNotFound(_)` | `migrate_index()` called with an unregistered index name |
 
 ---
 

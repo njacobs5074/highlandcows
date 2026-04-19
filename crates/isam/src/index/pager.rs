@@ -28,6 +28,12 @@ pub struct IndexMeta {
     pub page_count: u32,
     pub key_schema_version: u32,
     pub val_schema_version: u32,
+    /// For secondary index files (`.sidx`): the schema version stored when
+    /// the index was last migrated via `migrate_index`.
+    /// Always 0 in primary index files (`.idx`).
+    /// Stored at bytes 28–31 of the metadata page; zero in older files
+    /// (backward-compatible default).
+    pub index_schema_version: u32,
 }
 
 pub struct Pager {
@@ -47,7 +53,7 @@ impl Pager {
             .open(path)?;
 
         // Write page 0 — metadata.
-        let meta_bytes = Self::encode_meta(1, 2, 0, 0); // root=1, 2 pages total, versions 0,0
+        let meta_bytes = Self::encode_meta(1, 2, 0, 0, 0); // root=1, 2 pages total, versions 0,0,0
         file.write_all(&meta_bytes)?;
 
         // Write page 1 — empty leaf root.
@@ -63,6 +69,7 @@ impl Pager {
                 page_count: 2,
                 key_schema_version: 0,
                 val_schema_version: 0,
+                index_schema_version: 0,
             },
         })
     }
@@ -77,6 +84,7 @@ impl Pager {
                 page_count: 0,
                 key_schema_version: 0,
                 val_schema_version: 0,
+                index_schema_version: 0,
             },
         };
         pager.read_meta()?;
@@ -142,6 +150,7 @@ impl Pager {
         self.meta.page_count = u32::from_le_bytes(buf[16..20].try_into().unwrap());
         self.meta.key_schema_version = u32::from_le_bytes(buf[20..24].try_into().unwrap());
         self.meta.val_schema_version = u32::from_le_bytes(buf[24..28].try_into().unwrap());
+        self.meta.index_schema_version = u32::from_le_bytes(buf[28..32].try_into().unwrap());
         Ok(())
     }
 
@@ -152,6 +161,7 @@ impl Pager {
             self.meta.page_count,
             self.meta.key_schema_version,
             self.meta.val_schema_version,
+            self.meta.index_schema_version,
         );
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&bytes)?;
@@ -175,7 +185,7 @@ impl Pager {
     //  Static encoding helpers
     // ------------------------------------------------------------------ //
 
-    fn encode_meta(root_page_id: u32, page_count: u32, key_schema_version: u32, val_schema_version: u32) -> Vec<u8> {
+    fn encode_meta(root_page_id: u32, page_count: u32, key_schema_version: u32, val_schema_version: u32, index_schema_version: u32) -> Vec<u8> {
         let mut buf = vec![0u8; PAGE_SIZE];
         buf[0..8].copy_from_slice(MAGIC);
         let page_size = PAGE_SIZE as u32;
@@ -184,6 +194,7 @@ impl Pager {
         buf[16..20].copy_from_slice(&page_count.to_le_bytes());
         buf[20..24].copy_from_slice(&key_schema_version.to_le_bytes());
         buf[24..28].copy_from_slice(&val_schema_version.to_le_bytes());
+        buf[28..32].copy_from_slice(&index_schema_version.to_le_bytes());
         buf
     }
 
