@@ -194,8 +194,11 @@ where
     ///
     /// - [`IsamError::SingleUserMode`] — single-user mode is already active
     ///   (e.g. called recursively, or another thread holds it).
-    /// - [`IsamError::Timeout`] — an in-flight transaction on another thread
-    ///   did not finish within `timeout`.
+    /// - [`IsamError::Timeout`] — an in-flight transaction did not finish within
+    ///   `timeout`.  This also occurs if the calling thread itself holds an open
+    ///   [`Transaction`]: the transaction holds the storage lock, so the spin
+    ///   will never succeed and the call will time out.  Commit or roll back all
+    ///   transactions on the calling thread before calling `as_single_user`.
     ///
     /// # Example
     /// ```
