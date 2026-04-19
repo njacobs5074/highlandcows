@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::ThreadId;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -102,18 +103,44 @@ impl<K, V> Drop for SingleUserGuard<K, V> {
 impl<K, V> TransactionManager<K, V> {
     /// Enter single-user mode and return a guard that exits it on drop.
     ///
-    /// Fails with `IsamError::SingleUserMode` if already active.
-    pub(crate) fn enter_single_user_mode(&self) -> IsamResult<SingleUserGuard<K, V>> {
+    /// Sets the single-user flag immediately (so other threads start failing at
+    /// once), then spins on `try_lock` until any in-flight transaction finishes
+    /// or `timeout` expires.
+    ///
+    /// Returns:
+    /// - `Err(IsamError::SingleUserMode)` if another thread already holds single-user mode.
+    /// - `Err(IsamError::Timeout)` if an in-flight transaction did not finish within `timeout`.
+    pub(crate) fn enter_single_user_mode(&self, timeout: Duration) -> IsamResult<SingleUserGuard<K, V>> {
+        // Atomically claim single-user mode; fail fast if already active.
         self.single_user_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| IsamError::SingleUserMode)?;
 
-        let mut owner = self
-            .single_user_owner
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
-        *owner = Some(std::thread::current().id());
-        drop(owner);
+        {
+            let mut owner = self
+                .single_user_owner
+                .lock()
+                .map_err(|_| IsamError::LockPoisoned)?;
+            *owner = Some(std::thread::current().id());
+        }
+
+        // Spin until no transaction holds the storage lock, or timeout expires.
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.storage.try_lock().is_ok() {
+                // Successfully acquired and immediately released — no active transaction.
+                break;
+            }
+            if Instant::now() >= deadline {
+                // Undo: clear state so other threads are unblocked.
+                if let Ok(mut owner) = self.single_user_owner.lock() {
+                    *owner = None;
+                }
+                self.single_user_active.store(false, Ordering::Release);
+                return Err(IsamError::Timeout);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
 
         Ok(SingleUserGuard {
             manager: self.clone(),

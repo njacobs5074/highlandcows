@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::ops::{Bound, RangeBounds};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -40,6 +41,14 @@ fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
         Bound::Unbounded => Bound::Unbounded,
     }
 }
+
+// ── Constants ────────────────────────────────────────────────────────────── //
+
+/// Default timeout for [`Isam::as_single_user`].
+///
+/// 30 seconds — long enough for typical in-flight transactions to finish,
+/// short enough to surface hung transactions rather than waiting forever.
+pub const DEFAULT_SINGLE_USER_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Isam ─────────────────────────────────────────────────────────────────── //
 
@@ -166,10 +175,12 @@ where
 
     /// Execute a closure in single-user mode.
     ///
-    /// While `f` is executing, any other thread that attempts any database
-    /// operation on a clone of this `Isam` handle will receive
-    /// [`IsamError::SingleUserMode`] immediately (no blocking or waiting).
-    /// The calling thread can continue to use `self` normally inside `f`.
+    /// Sets the single-user flag immediately, then waits up to `timeout` for any
+    /// in-flight transaction on another thread to finish.  Once exclusive access
+    /// is confirmed, `f` is called.  Any other thread that attempts any database
+    /// operation while `f` is running receives [`IsamError::SingleUserMode`]
+    /// immediately (no blocking).  The calling thread can continue to use `self`
+    /// normally inside `f`.
     ///
     /// Single-user mode is intended for administrative operations — compaction,
     /// schema migration, and similar tasks — where you need to ensure no other
@@ -179,14 +190,17 @@ where
     /// The return value of `f` is forwarded to the caller.  Single-user mode is
     /// released when `f` returns, including if `f` returns an error or panics.
     ///
-    /// Returns [`IsamError::SingleUserMode`] if single-user mode is already
-    /// active (e.g. called recursively or from a different thread that also
-    /// holds it).
+    /// # Errors
+    ///
+    /// - [`IsamError::SingleUserMode`] — single-user mode is already active
+    ///   (e.g. called recursively, or another thread holds it).
+    /// - [`IsamError::Timeout`] — an in-flight transaction on another thread
+    ///   did not finish within `timeout`.
     ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
-    /// # use highlandcows_isam::Isam;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
     /// # let dir = TempDir::new().unwrap();
     /// # let path = dir.path().join("db");
     /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
@@ -195,13 +209,13 @@ where
     /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
     /// # txn.commit().unwrap();
     /// // Run compact exclusively — no other thread can touch the database.
-    /// db.as_single_user(|| db.compact()).unwrap();
+    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || db.compact()).unwrap();
     /// ```
-    pub fn as_single_user<F, T>(&self, f: F) -> IsamResult<T>
+    pub fn as_single_user<F, T>(&self, timeout: Duration, f: F) -> IsamResult<T>
     where
         F: FnOnce() -> IsamResult<T>,
     {
-        let _guard = self.manager.enter_single_user_mode()?;
+        let _guard = self.manager.enter_single_user_mode(timeout)?;
         f()
     }
 

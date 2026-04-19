@@ -153,7 +153,7 @@ std::thread::spawn(move || {
 `as_single_user` provides a way to run administrative operations with the guarantee that no other thread can access the database concurrently. While the closure is executing, any other thread that calls any `Isam` operation on a clone of the handle receives `IsamError::SingleUserMode` immediately (no blocking or waiting). The calling thread can continue to use the database normally inside the closure.
 
 ```rust
-db.as_single_user(|| {
+db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
     db.compact()?;
     db.migrate_index("city", 1, |mut u: User| {
         u.city = u.city.to_lowercase();
@@ -162,6 +162,8 @@ db.as_single_user(|| {
     Ok(())
 })?;
 ```
+
+`as_single_user` sets the exclusive flag immediately (so new operations on other threads start failing at once), then waits up to `timeout` for any in-flight transaction on another thread to finish. If the timeout expires before the lock is free, the flag is cleared and `IsamError::Timeout` is returned.
 
 Single-user mode is an in-process mechanism only; it does not provide exclusion across multiple processes. Re-entering `as_single_user` from within the same closure is not supported and returns `IsamError::SingleUserMode`.
 
@@ -259,7 +261,7 @@ handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Single-user mode
-db.as_single_user(|| { ... })     -> IsamResult<T>  // blocks other threads for duration of closure
+db.as_single_user(timeout, || { ... })  -> IsamResult<T>  // waits for in-flight txns, then blocks other threads
 
 // Offline administration (must not be called while a Transaction is live)
 db.compact()                      -> IsamResult<()>
@@ -282,6 +284,7 @@ db.migrate_index(name, version, f) -> IsamResult<()>
 | `IsamError::CorruptIndex(_)` | index file has an invalid magic number or page type |
 | `IsamError::IndexNotFound(_)` | `migrate_index()` called with an unregistered index name |
 | `IsamError::SingleUserMode` | a non-owner thread attempted an operation while single-user mode is active |
+| `IsamError::Timeout` | an in-flight transaction did not finish within the timeout passed to `as_single_user` |
 
 ---
 

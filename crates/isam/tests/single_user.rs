@@ -3,15 +3,18 @@ mod common;
 
 use std::sync::{Arc, Barrier};
 use std::thread;
+use std::time::Duration;
 
 use highlandcows_isam::{IsamError, IsamResult};
+
+const TIMEOUT: Duration = Duration::from_secs(5);
 
 // ── as_single_user basics ────────────────────────────────────────────────── //
 
 #[test]
 fn test_single_user_closure_runs_and_returns_value() {
     let (_dir, db) = common::make_db::<u32, String>();
-    let result: IsamResult<u32> = db.as_single_user(|| Ok(42));
+    let result: IsamResult<u32> = db.as_single_user(TIMEOUT, || Ok(42));
     assert_eq!(result.unwrap(), 42);
 }
 
@@ -19,7 +22,7 @@ fn test_single_user_closure_runs_and_returns_value() {
 fn test_single_user_closure_can_write_and_read() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    db.as_single_user(|| {
+    db.as_single_user(TIMEOUT, || {
         db.write(|txn| db.insert(txn, 1u32, &"hello".to_string()))?;
         let val = db.read(|txn| db.get(txn, &1u32))?;
         assert_eq!(val, Some("hello".to_string()));
@@ -32,7 +35,7 @@ fn test_single_user_closure_can_write_and_read() {
 fn test_single_user_closure_propagates_error() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    let result = db.as_single_user(|| -> IsamResult<()> {
+    let result = db.as_single_user(TIMEOUT, || -> IsamResult<()> {
         Err(IsamError::KeyNotFound)
     });
 
@@ -44,10 +47,10 @@ fn test_single_user_mode_released_after_closure() {
     let (_dir, db) = common::make_db::<u32, String>();
 
     // Enter and exit single-user mode via closure.
-    db.as_single_user(|| Ok(())).unwrap();
+    db.as_single_user(TIMEOUT, || Ok(())).unwrap();
 
     // Database is fully usable afterward — we can enter again.
-    db.as_single_user(|| {
+    db.as_single_user(TIMEOUT, || {
         db.write(|txn| db.insert(txn, 1u32, &"after".to_string()))
     })
     .unwrap();
@@ -75,11 +78,18 @@ fn test_single_user_wraps_compact() {
     })
     .unwrap();
 
-    db.as_single_user(|| db.compact()).unwrap();
+    db.as_single_user(TIMEOUT, || db.compact()).unwrap();
 
     // Records 3 and 4 should still be present.
     let val = db.read(|txn| db.get(txn, &3u32)).unwrap();
     assert_eq!(val, Some("3".to_string()));
+}
+
+#[test]
+fn test_default_timeout_constant_is_accessible() {
+    use highlandcows_isam::DEFAULT_SINGLE_USER_TIMEOUT;
+    // Smoke-test that the public constant compiles and has the expected value.
+    assert_eq!(DEFAULT_SINGLE_USER_TIMEOUT, Duration::from_secs(30));
 }
 
 // ── cross-thread exclusion ────────────────────────────────────────────────── //
@@ -100,11 +110,11 @@ fn test_other_thread_blocked_during_single_user_mode() {
         db2.write(|txn| db2.insert(txn, 99u32, &"blocked".to_string()))
     });
 
-    let result = db.as_single_user(|| {
+    let result = db.as_single_user(TIMEOUT, || {
         // Signal the other thread to attempt its write.
         barrier.wait();
         // Give the other thread time to attempt the operation.
-        thread::sleep(std::time::Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
         Ok(())
     });
     assert!(result.is_ok());
@@ -144,7 +154,7 @@ fn test_other_thread_can_operate_after_single_user_released() {
         db2.write(|txn| db2.insert(txn, 1u32, &"from thread".to_string()))
     });
 
-    db.as_single_user(|| {
+    db.as_single_user(TIMEOUT, || {
         barrier_enter.wait();
         barrier_exit.wait();
         Ok(())
@@ -159,16 +169,59 @@ fn test_other_thread_can_operate_after_single_user_released() {
     assert_eq!(val, Some("from thread".to_string()));
 }
 
+// ── timeout ───────────────────────────────────────────────────────────────── //
+
+#[test]
+fn test_single_user_timeout_if_transaction_held() {
+    let (_dir, db) = common::make_db::<u32, String>();
+    let db2 = db.clone();
+
+    // barrier_txn_held: other thread signals when its transaction is live.
+    let barrier_txn_held = Arc::new(Barrier::new(2));
+    // barrier_release: main thread signals when it's done asserting the timeout.
+    let barrier_release = Arc::new(Barrier::new(2));
+    let barrier_txn_held2 = Arc::clone(&barrier_txn_held);
+    let barrier_release2 = Arc::clone(&barrier_release);
+
+    let handle = thread::spawn(move || {
+        // Begin a transaction and hold it open.
+        let txn = db2.begin_transaction().unwrap();
+        // Signal: transaction is live.
+        barrier_txn_held2.wait();
+        // Hold until the main thread says it's done.
+        barrier_release2.wait();
+        txn.commit().unwrap();
+    });
+
+    // Wait for the other thread's transaction to be live.
+    barrier_txn_held.wait();
+
+    // Try to enter single-user mode with a short timeout — must fail.
+    let result = db.as_single_user(Duration::from_millis(50), || Ok(()));
+    assert!(
+        matches!(result, Err(IsamError::Timeout)),
+        "expected Timeout, got: {:?}",
+        result
+    );
+
+    // Release the other thread's transaction.
+    barrier_release.wait();
+    handle.join().unwrap();
+
+    // After the transaction is gone, single-user mode should be acquirable again.
+    db.as_single_user(TIMEOUT, || Ok(())).unwrap();
+}
+
 // ── re-entry ─────────────────────────────────────────────────────────────── //
 
 #[test]
 fn test_single_user_mode_not_reentrant() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    let result = db.as_single_user(|| {
+    let result = db.as_single_user(TIMEOUT, || {
         // Attempting to enter single-user mode again from the same thread
         // (the owner) returns SingleUserMode — re-entry is not supported.
-        db.as_single_user(|| Ok(()))
+        db.as_single_user(TIMEOUT, || Ok(()))
     });
 
     assert!(
