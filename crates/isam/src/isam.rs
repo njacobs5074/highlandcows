@@ -162,6 +162,49 @@ where
         })
     }
 
+    // ── Single-user mode ─────────────────────────────────────────────────── //
+
+    /// Execute a closure in single-user mode.
+    ///
+    /// While `f` is executing, any other thread that attempts any database
+    /// operation on a clone of this `Isam` handle will receive
+    /// [`IsamError::SingleUserMode`] immediately (no blocking or waiting).
+    /// The calling thread can continue to use `self` normally inside `f`.
+    ///
+    /// Single-user mode is intended for administrative operations — compaction,
+    /// schema migration, and similar tasks — where you need to ensure no other
+    /// thread modifies the database concurrently.  It is an in-process
+    /// mechanism only; multi-process exclusion is not supported.
+    ///
+    /// The return value of `f` is forwarded to the caller.  Single-user mode is
+    /// released when `f` returns, including if `f` returns an error or panics.
+    ///
+    /// Returns [`IsamError::SingleUserMode`] if single-user mode is already
+    /// active (e.g. called recursively or from a different thread that also
+    /// holds it).
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::Isam;
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// # let mut txn = db.begin_transaction().unwrap();
+    /// # for i in 0u32..5 { db.insert(&mut txn, i, &i.to_string()).unwrap(); }
+    /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
+    /// # txn.commit().unwrap();
+    /// // Run compact exclusively — no other thread can touch the database.
+    /// db.as_single_user(|| db.compact()).unwrap();
+    /// ```
+    pub fn as_single_user<F, T>(&self, f: F) -> IsamResult<T>
+    where
+        F: FnOnce() -> IsamResult<T>,
+    {
+        let _guard = self.manager.enter_single_user_mode()?;
+        f()
+    }
+
     /// Return a [`SecondaryIndexHandle`] for the named index.
     ///
     /// The index must have been registered via
@@ -238,7 +281,7 @@ where
     /// assert_eq!(indices[0].name, "city");
     /// ```
     pub fn secondary_indices(&self) -> IsamResult<Vec<IndexInfo>> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard
             .secondary_indices
             .iter()
@@ -629,7 +672,7 @@ where
     /// assert_eq!(db.key_schema_version().unwrap(), 0);
     /// ```
     pub fn key_schema_version(&self) -> IsamResult<u32> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard.index.key_schema_version())
     }
 
@@ -652,7 +695,7 @@ where
     /// assert_eq!(db.val_schema_version().unwrap(), 0);
     /// ```
     pub fn val_schema_version(&self) -> IsamResult<u32> {
-        let guard = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let guard = self.manager.lock_storage()?;
         Ok(guard.index.val_schema_version())
     }
 
@@ -723,7 +766,7 @@ where
     where
         F: FnMut(V) -> IsamResult<V>,
     {
-        let mut storage = self.manager.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         // Scan all primary records first, before mutating the index.
         let mut records: Vec<(K, V)> = Vec::new();
@@ -797,11 +840,7 @@ where
     /// db.compact().unwrap();
     /// ```
     pub fn compact(&self) -> IsamResult<()> {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let first_id = storage.index.first_leaf_id()?;
@@ -875,11 +914,7 @@ where
         V2: Serialize + DeserializeOwned + Clone + 'static,
         F: FnMut(V) -> IsamResult<V2>,
     {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let base_path = storage.base_path.clone();
         let key_schema_v = storage.index.key_schema_version();
@@ -962,11 +997,7 @@ where
         K2: Serialize + DeserializeOwned + Ord + Clone + 'static,
         F: FnMut(K) -> IsamResult<K2>,
     {
-        let mut storage = self
-            .manager
-            .storage
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)?;
+        let mut storage = self.manager.lock_storage()?;
 
         let base_path = storage.base_path.clone();
         let val_schema_v = storage.index.val_schema_version();

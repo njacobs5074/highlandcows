@@ -55,6 +55,7 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 - **Secondary indices** — define additional indices on any field of the value type via the `DeriveKey` trait; non-unique (many records per secondary key); maintained automatically and rolled back with transactions
 - **Compaction** — atomically rewrites the data and index files, removing tombstones and stale records
 - **Cloneable handle** — `Isam` is `Clone`; each clone is another handle to the same underlying storage, safe to share across threads
+- **Single-user mode** — `as_single_user(|| { ... })` lets one thread take exclusive access for administration, returning `IsamError::SingleUserMode` to any other thread that tries to operate concurrently
 
 ### File layout on disk
 
@@ -146,6 +147,23 @@ std::thread::spawn(move || {
 > the database lock internally. They must not be called while a `Transaction` is live on
 > the same thread, as this will deadlock. These are intended as offline administration
 > operations — commit or roll back all open transactions before calling them.
+
+### Single-user mode
+
+`as_single_user` provides a way to run administrative operations with the guarantee that no other thread can access the database concurrently. While the closure is executing, any other thread that calls any `Isam` operation on a clone of the handle receives `IsamError::SingleUserMode` immediately (no blocking or waiting). The calling thread can continue to use the database normally inside the closure.
+
+```rust
+db.as_single_user(|| {
+    db.compact()?;
+    db.migrate_index("city", 1, |mut u: User| {
+        u.city = u.city.to_lowercase();
+        Ok(u)
+    })?;
+    Ok(())
+})?;
+```
+
+Single-user mode is an in-process mechanism only; it does not provide exclusion across multiple processes. Re-entering `as_single_user` from within the same closure is not supported and returns `IsamError::SingleUserMode`.
 
 ### Secondary indices
 
@@ -240,6 +258,9 @@ db.max_key(&mut txn)              -> IsamResult<Option<K>>
 handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
+// Single-user mode
+db.as_single_user(|| { ... })     -> IsamResult<T>  // blocks other threads for duration of closure
+
 // Offline administration (must not be called while a Transaction is live)
 db.compact()                      -> IsamResult<()>
 db.key_schema_version()           -> IsamResult<u32>
@@ -260,6 +281,7 @@ db.migrate_index(name, version, f) -> IsamResult<()>
 | `IsamError::Bincode(_)` | serialization/deserialization failure |
 | `IsamError::CorruptIndex(_)` | index file has an invalid magic number or page type |
 | `IsamError::IndexNotFound(_)` | `migrate_index()` called with an unregistered index name |
+| `IsamError::SingleUserMode` | a non-owner thread attempted an operation while single-user mode is active |
 
 ---
 
