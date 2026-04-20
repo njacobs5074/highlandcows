@@ -36,6 +36,14 @@ pub enum IsamError {
     /// No secondary index with the given name is registered on this database.
     #[error("secondary index not found: {0}")]
     IndexNotFound(String),
+
+    /// The database is in single-user mode and the calling thread is not the owner.
+    #[error("database is in single-user mode")]
+    SingleUserMode,
+
+    /// Timed out waiting to acquire single-user mode (in-flight transaction did not finish in time).
+    #[error("timed out waiting to acquire single-user mode")]
+    Timeout,
 }
 
 /// Convenience alias — every fallible function in this crate returns this.

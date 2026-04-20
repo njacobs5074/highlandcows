@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use highlandcows_isam::{DeriveKey, Isam};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;

@@ -171,6 +171,6 @@ pub mod transaction;
 
 // Re-export the main types at the crate root for convenience.
 pub use error::{IsamError, IsamResult};
-pub use isam::{IndexInfo, Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle};
+pub use isam::{IndexInfo, Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle, DEFAULT_SINGLE_USER_TIMEOUT};
 pub use secondary_index::DeriveKey;
 pub use transaction::Transaction;
