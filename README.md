@@ -22,14 +22,14 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-highlandcows = "0.1.2"
+highlandcows = "0.1.3"
 ```
 
 Or, if you prefer to depend on the ISAM crate directly:
 
 ```toml
 [dependencies]
-highlandcows-isam = "0.1.2"
+highlandcows-isam = "0.1.3"
 ```
 
 Then import what you need:
@@ -150,22 +150,55 @@ std::thread::spawn(move || {
 
 ### Single-user mode
 
-`as_single_user` provides a way to run administrative operations with the guarantee that no other thread can access the database concurrently. While the closure is executing, any other thread that calls any `Isam` operation on a clone of the handle receives `IsamError::SingleUserMode` immediately (no blocking or waiting). The calling thread can continue to use the database normally inside the closure.
+`as_single_user` lets one thread take exclusive access to the database for administration operations such as compaction and index migration. While the closure is running, any other thread that calls any `Isam` operation on a clone of the same handle receives `IsamError::SingleUserMode` immediately — those threads are never blocked, they fail fast.
 
 ```rust
+use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+
 db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
     db.compact()?;
-    db.migrate_index("city", 1, |mut u: User| {
-        u.city = u.city.to_lowercase();
-        Ok(u)
-    })?;
     Ok(())
 })?;
 ```
 
-`as_single_user` sets the exclusive flag immediately (so new operations on other threads start failing at once), then waits up to `timeout` for any in-flight transaction on another thread to finish. If the timeout expires before the lock is free, the flag is cleared and `IsamError::Timeout` is returned.
+`DEFAULT_SINGLE_USER_TIMEOUT` is exported at the crate root and equals 30 seconds. Pass a custom `Duration` if you need a shorter or longer window.
 
-Single-user mode is an in-process mechanism only; it does not provide exclusion across multiple processes. Re-entering `as_single_user` from within the same closure is not supported and returns `IsamError::SingleUserMode`.
+#### How it works
+
+1. The exclusive flag is set atomically. From this point on, other threads fail immediately with `IsamError::SingleUserMode`.
+2. The call then waits (spinning with 1 ms sleeps) for any in-flight transaction on another thread to finish and release the storage lock.
+3. Once the lock is confirmed free, the closure runs with exclusive access.
+4. When the closure returns — normally or via panic — the exclusive flag is cleared and other threads can operate again.
+
+If step 2 does not complete within `timeout`, the flag is cleared and `IsamError::Timeout` is returned. The database is left fully operational.
+
+#### What to run inside the closure
+
+Single-user mode is intended for operations that must not run concurrently with reads or writes:
+
+```rust
+db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
+    // Reclaim disk space from deleted/updated records.
+    db.compact()?;
+
+    // Rebuild a secondary index after updating the DeriveKey logic,
+    // and record the migration with a version bump.
+    db.migrate_index("city", 1, |mut u: User| {
+        u.city = u.city.to_lowercase();
+        Ok(u)
+    })?;
+
+    Ok(())
+})?;
+```
+
+Inside the closure you can call `write`, `read`, `begin_transaction`, and any of the offline administration methods (`compact`, `migrate_values`, `migrate_keys`, `migrate_index`). Normal CRUD operations work as usual; the exclusivity guarantee is enforced against other threads, not against the closure itself.
+
+#### Caveats
+
+- **Deadlock if you hold a transaction**: `as_single_user` waits for the storage lock to be free. If the calling thread already holds an open `Transaction`, the storage lock is already held by that same thread, so the spin will never succeed and the call will time out with `IsamError::Timeout`. Commit or roll back all open transactions on the calling thread before calling `as_single_user`.
+- **Not re-entrant**: calling `as_single_user` again from inside the closure returns `IsamError::SingleUserMode`.
+- **In-process only**: the exclusive flag is an in-memory atomic; it does not prevent access from a separate process opening the same database files.
 
 ### Secondary indices
 
