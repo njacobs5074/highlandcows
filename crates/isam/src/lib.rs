@@ -151,6 +151,91 @@
 //! assert_eq!(info[0].schema_version, 1);
 //! ```
 //!
+//! ## Single-user mode
+//!
+//! [`Isam::as_single_user`] lets one thread take exclusive access to the
+//! database for administration operations such as compaction and index
+//! migration.  While the closure is running, any other thread that calls any
+//! [`Isam`] operation on a clone of the same handle receives
+//! [`IsamError::SingleUserMode`] immediately — those threads are never
+//! blocked, they fail fast.
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+//!
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("db");
+//! # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || db.compact()).unwrap();
+//! ```
+//!
+//! [`DEFAULT_SINGLE_USER_TIMEOUT`] is 30 seconds.  Pass a custom
+//! [`std::time::Duration`] if you need a shorter or longer window.
+//!
+//! ### How it works
+//!
+//! 1. The exclusive flag is set atomically.  From this point on, other threads
+//!    fail immediately with [`IsamError::SingleUserMode`].
+//! 2. The call waits (spinning with 1 ms sleeps) for any in-flight transaction
+//!    on another thread to finish and release the storage lock.
+//! 3. Once the lock is confirmed free, the closure runs with exclusive access.
+//! 4. When the closure returns — normally or via panic — the exclusive flag is
+//!    cleared and other threads can operate again.
+//!
+//! If step 2 does not complete within `timeout`, the flag is cleared and
+//! [`IsamError::Timeout`] is returned.  The database is left fully operational.
+//!
+//! ### What to run inside the closure
+//!
+//! Single-user mode is intended for operations that must not run concurrently
+//! with reads or writes:
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! # use serde::{Serialize, Deserialize};
+//! # use highlandcows_isam::{Isam, DeriveKey, DEFAULT_SINGLE_USER_TIMEOUT};
+//! # #[derive(Serialize, Deserialize, Clone)]
+//! # struct User { name: String, city: String }
+//! # struct CityIndex;
+//! # impl DeriveKey<User> for CityIndex {
+//! #     type Key = String;
+//! #     fn derive(u: &User) -> String { u.city.to_lowercase() }
+//! # }
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("db");
+//! # let db = Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
+//! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
+//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
+//!     // Reclaim disk space from deleted/updated records.
+//!     db.compact()?;
+//!     // Rebuild a secondary index after updating the DeriveKey logic.
+//!     db.migrate_index("city", 1, |mut u: User| {
+//!         u.city = u.city.to_lowercase();
+//!         Ok(u)
+//!     })?;
+//!     Ok(())
+//! }).unwrap();
+//! ```
+//!
+//! Inside the closure you can call [`Isam::write`], [`Isam::read`],
+//! [`Isam::begin_transaction`], and any of the offline administration methods
+//! ([`Isam::compact`], [`Isam::migrate_values`], [`Isam::migrate_keys`],
+//! [`Isam::migrate_index`]).
+//!
+//! ### Caveats
+//!
+//! - **Deadlock if you hold a transaction**: `as_single_user` waits for the
+//!   storage lock to be free.  If the calling thread already holds an open
+//!   [`Transaction`], the storage lock is already taken, so the spin will
+//!   never succeed and the call will time out.  Commit or roll back all open
+//!   transactions on the calling thread before calling `as_single_user`.
+//! - **Not re-entrant**: calling `as_single_user` again from inside the
+//!   closure returns [`IsamError::SingleUserMode`].
+//! - **In-process only**: the exclusive flag is an in-memory atomic; it does
+//!   not prevent access from a separate process opening the same database
+//!   files.
+//!
 //! ## Files on disk
 //!
 //! | File                  | Contents                                       |
