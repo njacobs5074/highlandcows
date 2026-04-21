@@ -14,7 +14,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 #[test]
 fn test_single_user_closure_runs_and_returns_value() {
     let (_dir, db) = common::make_db::<u32, String>();
-    let result: IsamResult<u32> = db.as_single_user(TIMEOUT, || Ok(42));
+    let result: IsamResult<u32> = db.as_single_user(TIMEOUT, |_token, _db| Ok(42));
     assert_eq!(result.unwrap(), 42);
 }
 
@@ -22,7 +22,7 @@ fn test_single_user_closure_runs_and_returns_value() {
 fn test_single_user_closure_can_write_and_read() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    db.as_single_user(TIMEOUT, || {
+    db.as_single_user(TIMEOUT, |_token, db| {
         db.write(|txn| db.insert(txn, 1u32, &"hello".to_string()))?;
         let val = db.read(|txn| db.get(txn, &1u32))?;
         assert_eq!(val, Some("hello".to_string()));
@@ -35,7 +35,7 @@ fn test_single_user_closure_can_write_and_read() {
 fn test_single_user_closure_propagates_error() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    let result = db.as_single_user(TIMEOUT, || -> IsamResult<()> {
+    let result = db.as_single_user(TIMEOUT, |_token, _db| -> IsamResult<()> {
         Err(IsamError::KeyNotFound)
     });
 
@@ -47,10 +47,10 @@ fn test_single_user_mode_released_after_closure() {
     let (_dir, db) = common::make_db::<u32, String>();
 
     // Enter and exit single-user mode via closure.
-    db.as_single_user(TIMEOUT, || Ok(())).unwrap();
+    db.as_single_user(TIMEOUT, |_token, _db| Ok(())).unwrap();
 
     // Database is fully usable afterward — we can enter again.
-    db.as_single_user(TIMEOUT, || {
+    db.as_single_user(TIMEOUT, |_token, db| {
         db.write(|txn| db.insert(txn, 1u32, &"after".to_string()))
     })
     .unwrap();
@@ -78,7 +78,7 @@ fn test_single_user_wraps_compact() {
     })
     .unwrap();
 
-    db.as_single_user(TIMEOUT, || db.compact()).unwrap();
+    db.as_single_user(TIMEOUT, |token, db| db.compact(token)).unwrap();
 
     // Records 3 and 4 should still be present.
     let val = db.read(|txn| db.get(txn, &3u32)).unwrap();
@@ -110,7 +110,7 @@ fn test_other_thread_blocked_during_single_user_mode() {
         db2.write(|txn| db2.insert(txn, 99u32, &"blocked".to_string()))
     });
 
-    let result = db.as_single_user(TIMEOUT, || {
+    let result = db.as_single_user(TIMEOUT, |_token, _db| {
         // Signal the other thread to attempt its write.
         barrier.wait();
         // Give the other thread time to attempt the operation.
@@ -154,7 +154,7 @@ fn test_other_thread_can_operate_after_single_user_released() {
         db2.write(|txn| db2.insert(txn, 1u32, &"from thread".to_string()))
     });
 
-    db.as_single_user(TIMEOUT, || {
+    db.as_single_user(TIMEOUT, |_token, _db| {
         barrier_enter.wait();
         barrier_exit.wait();
         Ok(())
@@ -197,7 +197,7 @@ fn test_single_user_timeout_if_transaction_held() {
     barrier_txn_held.wait();
 
     // Try to enter single-user mode with a short timeout — must fail.
-    let result = db.as_single_user(Duration::from_millis(50), || Ok(()));
+    let result = db.as_single_user(Duration::from_millis(50), |_token, _db| Ok(()));
     assert!(
         matches!(result, Err(IsamError::Timeout)),
         "expected Timeout, got: {:?}",
@@ -209,7 +209,7 @@ fn test_single_user_timeout_if_transaction_held() {
     handle.join().unwrap();
 
     // After the transaction is gone, single-user mode should be acquirable again.
-    db.as_single_user(TIMEOUT, || Ok(())).unwrap();
+    db.as_single_user(TIMEOUT, |_token, _db| Ok(())).unwrap();
 }
 
 // ── re-entry ─────────────────────────────────────────────────────────────── //
@@ -218,10 +218,10 @@ fn test_single_user_timeout_if_transaction_held() {
 fn test_single_user_mode_not_reentrant() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    let result = db.as_single_user(TIMEOUT, || {
+    let result = db.as_single_user(TIMEOUT, |_token, db| {
         // Attempting to enter single-user mode again from the same thread
         // (the owner) returns SingleUserMode — re-entry is not supported.
-        db.as_single_user(TIMEOUT, || Ok(()))
+        db.as_single_user(TIMEOUT, |_token, _db| Ok(()))
     });
 
     assert!(

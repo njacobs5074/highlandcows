@@ -50,6 +50,18 @@ fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
 /// short enough to surface hung transactions rather than waiting forever.
 pub const DEFAULT_SINGLE_USER_TIMEOUT: Duration = Duration::from_secs(30);
 
+// ── SingleUserToken ───────────────────────────────────────────────────────── //
+
+/// An opaque capability token proving the caller is inside an
+/// [`Isam::as_single_user`] closure.
+///
+/// `SingleUserToken` can only be constructed by `as_single_user`; a reference
+/// to it is passed into the closure and must be forwarded to any administrative
+/// method that requires exclusive access.  This enforces **at compile time**
+/// that [`Isam::compact`], [`Isam::migrate_values`], [`Isam::migrate_keys`],
+/// and [`Isam::migrate_index`] are never called outside of single-user mode.
+pub struct SingleUserToken(());
+
 // ── Isam ─────────────────────────────────────────────────────────────────── //
 
 /// The public ISAM database handle.
@@ -212,14 +224,14 @@ where
     /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
     /// # txn.commit().unwrap();
     /// // Run compact exclusively — no other thread can touch the database.
-    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || db.compact()).unwrap();
+    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
     /// ```
     pub fn as_single_user<F, T>(&self, timeout: Duration, f: F) -> IsamResult<T>
     where
-        F: FnOnce() -> IsamResult<T>,
+        F: FnOnce(&SingleUserToken, Isam<K, V>) -> IsamResult<T>,
     {
         let _guard = self.manager.enter_single_user_mode(timeout)?;
-        f()
+        f(&SingleUserToken(()), self.clone())
     }
 
     /// Return a [`SecondaryIndexHandle`] for the named index.
@@ -741,13 +753,14 @@ where
     ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
+    /// [`Transaction`] is live on the same thread — commit or roll back all
+    /// open transactions before calling [`as_single_user`](Self::as_single_user).
     ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
     /// use serde::{Serialize, Deserialize};
-    /// use highlandcows_isam::{Isam, DeriveKey};
+    /// use highlandcows_isam::{Isam, DeriveKey, DEFAULT_SINGLE_USER_TIMEOUT};
     ///
     /// #[derive(Serialize, Deserialize, Clone)]
     /// struct User { name: String, city: String }
@@ -771,15 +784,17 @@ where
     ///
     /// // Rebuild the "city" index, normalizing city names to lowercase
     /// // so the index matches the updated DeriveKey logic.
-    /// db.migrate_index("city", 1, |mut u: User| {
-    ///     u.city = u.city.to_lowercase();
-    ///     Ok(u)
+    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///     db.migrate_index("city", 1, |mut u: User| {
+    ///         u.city = u.city.to_lowercase();
+    ///         Ok(u)
+    ///     }, token)
     /// }).unwrap();
     ///
     /// let info = db.secondary_indices().unwrap();
     /// assert_eq!(info[0].schema_version, 1);
     /// ```
-    pub fn migrate_index<F>(&self, name: &str, new_version: u32, mut f: F) -> IsamResult<()>
+    pub fn migrate_index<F>(&self, name: &str, new_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<()>
     where
         F: FnMut(V) -> IsamResult<V>,
     {
@@ -838,14 +853,13 @@ where
     ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.  These operations are
-    /// intended for offline administration — commit or roll back all open
-    /// transactions before calling them.
+    /// [`Transaction`] is live on the same thread — commit or roll back all
+    /// open transactions before calling [`as_single_user`](Self::as_single_user).
     ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
-    /// # use highlandcows_isam::Isam;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
     /// # let dir = TempDir::new().unwrap();
     /// # let path = dir.path().join("db");
     /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
@@ -853,10 +867,9 @@ where
     /// # for i in 0u32..5 { db.insert(&mut txn, i, &i.to_string()).unwrap(); }
     /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
     /// # txn.commit().unwrap();
-    /// // All transactions committed — safe to compact.
-    /// db.compact().unwrap();
+    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
     /// ```
-    pub fn compact(&self) -> IsamResult<()> {
+    pub fn compact(&self, _token: &SingleUserToken) -> IsamResult<()> {
         let mut storage = self.manager.lock_storage()?;
 
         let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
@@ -906,14 +919,13 @@ where
     ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.  These operations are
-    /// intended for offline administration — commit or roll back all open
-    /// transactions before calling them.
+    /// [`Transaction`] is live on the same thread — commit or roll back all
+    /// open transactions before calling [`as_single_user`](Self::as_single_user).
     ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
-    /// # use highlandcows_isam::Isam;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
     /// # let dir = TempDir::new().unwrap();
     /// # let path = dir.path().join("db");
     /// let db: Isam<u32, String> = Isam::create(&path).unwrap();
@@ -922,11 +934,13 @@ where
     /// # txn.commit().unwrap();
     /// // Migrate String values → u64, setting val schema version to 1.
     /// let db2: Isam<u32, u64> = db
-    ///     .migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap()))
+    ///     .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///         db.migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap()), token)
+    ///     })
     ///     .unwrap();
     /// assert_eq!(db2.val_schema_version().unwrap(), 1);
     /// ```
-    pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F) -> IsamResult<Isam<K, V2>>
+    pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<Isam<K, V2>>
     where
         V2: Serialize + DeserializeOwned + Clone + 'static,
         F: FnMut(V) -> IsamResult<V2>,
@@ -989,14 +1003,13 @@ where
     ///
     /// # Deadlock warning
     /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.  These operations are
-    /// intended for offline administration — commit or roll back all open
-    /// transactions before calling them.
+    /// [`Transaction`] is live on the same thread — commit or roll back all
+    /// open transactions before calling [`as_single_user`](Self::as_single_user).
     ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
-    /// # use highlandcows_isam::Isam;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
     /// # let dir = TempDir::new().unwrap();
     /// # let path = dir.path().join("db");
     /// let db: Isam<u32, String> = Isam::create(&path).unwrap();
@@ -1005,11 +1018,13 @@ where
     /// # txn.commit().unwrap();
     /// // Migrate u32 keys → String, setting key schema version to 1.
     /// let db2: Isam<String, String> = db
-    ///     .migrate_keys(1, |k: u32| Ok(format!("{k}")))
+    ///     .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///         db.migrate_keys(1, |k: u32| Ok(format!("{k}")), token)
+    ///     })
     ///     .unwrap();
     /// assert_eq!(db2.key_schema_version().unwrap(), 1);
     /// ```
-    pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F) -> IsamResult<Isam<K2, V>>
+    pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<Isam<K2, V>>
     where
         K2: Serialize + DeserializeOwned + Ord + Clone + 'static,
         F: FnMut(K) -> IsamResult<K2>,
