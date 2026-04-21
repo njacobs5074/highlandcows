@@ -127,7 +127,7 @@
 //! ```
 //! # use tempfile::TempDir;
 //! # use serde::{Serialize, Deserialize};
-//! # use highlandcows_isam::{Isam, DeriveKey};
+//! # use highlandcows_isam::{Isam, DeriveKey, DEFAULT_SINGLE_USER_TIMEOUT};
 //! # #[derive(Serialize, Deserialize, Clone)]
 //! # struct User { name: String, city: String }
 //! # struct CityIndex;
@@ -142,9 +142,11 @@
 //! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
 //! // Rebuild the city index, normalizing city names to lowercase so the
 //! // on-disk data matches the updated DeriveKey logic.  Bumps schema_version to 1.
-//! db.migrate_index("city", 1, |mut u: User| {
-//!     u.city = u.city.to_lowercase();
-//!     Ok(u)
+//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+//!     db.migrate_index("city", 1, |mut u: User| {
+//!         u.city = u.city.to_lowercase();
+//!         Ok(u)
+//!     }, token)
 //! }).unwrap();
 //!
 //! let info = db.secondary_indices().unwrap();
@@ -167,7 +169,7 @@
 //! # let dir = TempDir::new().unwrap();
 //! # let path = dir.path().join("db");
 //! # let db: Isam<u32, String> = Isam::create(&path).unwrap();
-//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || db.compact()).unwrap();
+//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
 //! ```
 //!
 //! [`DEFAULT_SINGLE_USER_TIMEOUT`] is 30 seconds.  Pass a custom
@@ -206,14 +208,14 @@
 //! # let path = dir.path().join("db");
 //! # let db = Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
 //! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
-//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
+//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
 //!     // Reclaim disk space from deleted/updated records.
-//!     db.compact()?;
+//!     db.compact(token)?;
 //!     // Rebuild a secondary index after updating the DeriveKey logic.
 //!     db.migrate_index("city", 1, |mut u: User| {
 //!         u.city = u.city.to_lowercase();
 //!         Ok(u)
-//!     })?;
+//!     }, token)?;
 //!     Ok(())
 //! }).unwrap();
 //! ```
@@ -256,6 +258,6 @@ pub mod transaction;
 
 // Re-export the main types at the crate root for convenience.
 pub use error::{IsamError, IsamResult};
-pub use isam::{IndexInfo, Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle, DEFAULT_SINGLE_USER_TIMEOUT};
+pub use isam::{IndexInfo, Isam, IsamBuilder, IsamIter, RangeIter, SecondaryIndexHandle, SingleUserToken, DEFAULT_SINGLE_USER_TIMEOUT};
 pub use secondary_index::DeriveKey;
 pub use transaction::Transaction;

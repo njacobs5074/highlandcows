@@ -1,6 +1,6 @@
 mod common;
 use common::make_db;
-use highlandcows_isam::Isam;
+use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
 #[test]
 fn test_compact_removes_tombstones() {
@@ -25,7 +25,7 @@ fn test_compact_removes_tombstones() {
         .unwrap()
         .len();
 
-    db.compact().unwrap();
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
 
     let idb_after = std::fs::metadata(dir.path().join("test.idb"))
         .unwrap()
@@ -56,7 +56,7 @@ fn test_compact_preserves_all_alive_records() {
         txn.commit().unwrap();
     }
 
-    db.compact().unwrap();
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
 
     let mut txn = db.begin_transaction().unwrap();
     for i in 0..50u32 {

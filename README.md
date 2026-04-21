@@ -22,14 +22,14 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-highlandcows = "0.1.3"
+highlandcows = "0.2.0"
 ```
 
 Or, if you prefer to depend on the ISAM crate directly:
 
 ```toml
 [dependencies]
-highlandcows-isam = "0.1.3"
+highlandcows-isam = "0.2.0"
 ```
 
 Then import what you need:
@@ -55,7 +55,7 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 - **Secondary indices** — define additional indices on any field of the value type via the `DeriveKey` trait; non-unique (many records per secondary key); maintained automatically and rolled back with transactions
 - **Compaction** — atomically rewrites the data and index files, removing tombstones and stale records
 - **Cloneable handle** — `Isam` is `Clone`; each clone is another handle to the same underlying storage, safe to share across threads
-- **Single-user mode** — `as_single_user(|| { ... })` lets one thread take exclusive access for administration, returning `IsamError::SingleUserMode` to any other thread that tries to operate concurrently
+- **Single-user mode** — `as_single_user(timeout, |token, db| { ... })` lets one thread take exclusive access for administration; admin methods (`compact`, `migrate_*`) require the projected `&SingleUserToken`, enforcing correct usage at compile time
 
 ### File layout on disk
 
@@ -155,8 +155,8 @@ std::thread::spawn(move || {
 ```rust
 use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
-db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
-    db.compact()?;
+db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    db.compact(token)?;
     Ok(())
 })?;
 ```
@@ -177,16 +177,16 @@ If step 2 does not complete within `timeout`, the flag is cleared and `IsamError
 Single-user mode is intended for operations that must not run concurrently with reads or writes:
 
 ```rust
-db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, || {
+db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
     // Reclaim disk space from deleted/updated records.
-    db.compact()?;
+    db.compact(token)?;
 
     // Rebuild a secondary index after updating the DeriveKey logic,
     // and record the migration with a version bump.
     db.migrate_index("city", 1, |mut u: User| {
         u.city = u.city.to_lowercase();
         Ok(u)
-    })?;
+    }, token)?;
 
     Ok(())
 })?;
@@ -294,15 +294,15 @@ handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Single-user mode
-db.as_single_user(timeout, || { ... })  -> IsamResult<T>  // waits for in-flight txns, then blocks other threads
+db.as_single_user(timeout, |token, db| { ... })  -> IsamResult<T>  // projects token + db clone into closure
 
-// Offline administration (must not be called while a Transaction is live)
-db.compact()                      -> IsamResult<()>
-db.key_schema_version()           -> IsamResult<u32>
-db.val_schema_version()           -> IsamResult<u32>
-db.migrate_values(version, f)     -> IsamResult<Isam<K, V2>>
-db.migrate_keys(version, f)       -> IsamResult<Isam<K2, V>>
-db.migrate_index(name, version, f) -> IsamResult<()>
+// Offline administration (require a &SingleUserToken — must be called inside as_single_user)
+db.compact(token)                      -> IsamResult<()>
+db.key_schema_version()                -> IsamResult<u32>
+db.val_schema_version()                -> IsamResult<u32>
+db.migrate_values(version, f, token)   -> IsamResult<Isam<K, V2>>
+db.migrate_keys(version, f, token)     -> IsamResult<Isam<K2, V>>
+db.migrate_index(name, version, f, token) -> IsamResult<()>
 ```
 
 ### Error types

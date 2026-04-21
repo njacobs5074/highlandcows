@@ -1,6 +1,6 @@
 mod common;
 use common::{make_person_db, CityIndex, NameIndex, Person};
-use highlandcows_isam::Isam;
+use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 use tempfile::TempDir;
 
 // ── Basic lookup ───────────────────────────────────────────────────────── //
@@ -374,7 +374,9 @@ fn test_migrate_index_identity_preserves_results() {
     db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "Paris".into()  })).unwrap();
 
     // Identity migration: f = |v| v — just a rebuild with a version bump.
-    db.migrate_index("city", 1, |v| Ok(v)).unwrap();
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |v| Ok(v), token)
+    }).unwrap();
 
     let mut london = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
     london.sort_by_key(|(k, _)| *k);
@@ -395,7 +397,9 @@ fn test_migrate_index_updates_schema_version() {
     let city = info.iter().find(|i| i.name == "city").unwrap();
     assert_eq!(city.schema_version, 0);
 
-    db.migrate_index("city", 3, |v| Ok(v)).unwrap();
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 3, |v| Ok(v), token)
+    }).unwrap();
 
     let info = db.secondary_indices().unwrap();
     let city = info.iter().find(|i| i.name == "city").unwrap();
@@ -414,9 +418,11 @@ fn test_migrate_index_with_value_transformation() {
     db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "Paris".into()  })).unwrap();
 
     // Transform: lowercase the city before DeriveKey::derive runs.
-    db.migrate_index("city", 1, |mut p: Person| {
-        p.city = p.city.to_lowercase();
-        Ok(p)
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |mut p: Person| {
+            p.city = p.city.to_lowercase();
+            Ok(p)
+        }, token)
     }).unwrap();
 
     // Old keys no longer match.
@@ -437,7 +443,9 @@ fn test_migrate_index_does_not_affect_other_index() {
     db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
 
     // Migrate only "city"; "name" index should be untouched.
-    db.migrate_index("city", 1, |v| Ok(v)).unwrap();
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |v| Ok(v), token)
+    }).unwrap();
 
     let alice = db.read(|txn| name_idx.lookup(txn, &"Alice".to_string())).unwrap();
     assert_eq!(alice.len(), 1);
@@ -451,9 +459,11 @@ fn test_migrate_index_does_not_modify_primary_records() {
     db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
 
     // Transform city to lowercase for index derivation only.
-    db.migrate_index("city", 1, |mut p: Person| {
-        p.city = p.city.to_lowercase();
-        Ok(p)
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |mut p: Person| {
+            p.city = p.city.to_lowercase();
+            Ok(p)
+        }, token)
     }).unwrap();
 
     // Primary record should still have original city casing.
@@ -464,7 +474,9 @@ fn test_migrate_index_does_not_modify_primary_records() {
 #[test]
 fn test_migrate_index_unknown_name_returns_error() {
     let (_dir, db) = make_person_db();
-    let result = db.migrate_index("nonexistent", 1, |v: Person| Ok(v));
+    let result = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("nonexistent", 1, |v: Person| Ok(v), token)
+    });
     assert!(result.is_err());
 }
 
@@ -479,7 +491,9 @@ fn test_migrate_index_schema_version_persists_across_reopen() {
             .create(&path)
             .unwrap();
         db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
-        db.migrate_index("city", 2, |v| Ok(v)).unwrap();
+        db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.migrate_index("city", 2, |v| Ok(v), token)
+        }).unwrap();
     }
 
     let db = Isam::<u32, Person>::builder()

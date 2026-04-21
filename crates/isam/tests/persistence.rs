@@ -1,5 +1,5 @@
 mod common;
-use highlandcows_isam::Isam;
+use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 use tempfile::TempDir;
 
 // ── Byte array keys and values ─────────────────────────────────────────── //
@@ -94,7 +94,9 @@ fn test_schema_versions_persist_across_reopen() {
         db.insert(&mut txn, 1u32, &"42".to_string()).unwrap();
         txn.commit().unwrap();
         let db2: Isam<u32, u64> = db
-            .migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap_or(0)))
+            .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+                db.migrate_values(1, |s: String| Ok(s.parse::<u64>().unwrap_or(0)), token)
+            })
             .unwrap();
         drop(db2);
     }
@@ -119,7 +121,9 @@ fn test_migrate_values() {
     }
 
     let db2: Isam<u32, u64> = db
-        .migrate_values(1, |s: String| Ok(s.len() as u64))
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.migrate_values(1, |s: String| Ok(s.len() as u64), token)
+        })
         .unwrap();
 
     assert_eq!(db2.val_schema_version().unwrap(), 1);
@@ -146,7 +150,9 @@ fn test_migrate_keys() {
     }
 
     let db2: Isam<String, String> = db
-        .migrate_keys(1, |k: u32| Ok(format!("{k}")))
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.migrate_keys(1, |k: u32| Ok(format!("{k}")), token)
+        })
         .unwrap();
 
     assert_eq!(db2.key_schema_version().unwrap(), 1);
@@ -176,7 +182,9 @@ fn test_migrate_keys_reorders_correctly() {
     }
 
     let db2: Isam<String, String> = db
-        .migrate_keys(2, |k: u32| Ok(format!("{k:02}")))
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.migrate_keys(2, |k: u32| Ok(format!("{k:02}")), token)
+        })
         .unwrap();
 
     assert_eq!(db2.key_schema_version().unwrap(), 2);
@@ -203,11 +211,15 @@ fn test_migrate_values_then_keys() {
     }
 
     let db2: Isam<u32, usize> = db
-        .migrate_values(1, |s: String| Ok(s.len()))
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.migrate_values(1, |s: String| Ok(s.len()), token)
+        })
         .unwrap();
 
     let db3: Isam<String, usize> = db2
-        .migrate_keys(1, |k: u32| Ok(format!("{k:04}")))
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db2| {
+            db2.migrate_keys(1, |k: u32| Ok(format!("{k:04}")), token)
+        })
         .unwrap();
 
     assert_eq!(db3.key_schema_version().unwrap(), 1);
