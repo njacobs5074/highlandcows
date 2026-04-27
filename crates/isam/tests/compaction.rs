@@ -56,7 +56,12 @@ fn test_compact_preserves_all_alive_records() {
         txn.commit().unwrap();
     }
 
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
+    let db = db
+        .as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+            db.compact(token)?;
+            Ok(db)
+        })
+        .unwrap();
 
     let mut txn = db.begin_transaction().unwrap();
     for i in 0..50u32 {

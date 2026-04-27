@@ -374,8 +374,9 @@ fn test_migrate_index_identity_preserves_results() {
     db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "Paris".into()  })).unwrap();
 
     // Identity migration: f = |v| v — just a rebuild with a version bump.
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
-        db.migrate_index("city", 1, |v| Ok(v), token)
+    let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |v| Ok(v), token)?;
+        Ok(db)
     }).unwrap();
 
     let mut london = db.read(|txn| city_idx.lookup(txn, &"London".to_string())).unwrap();
@@ -397,8 +398,9 @@ fn test_migrate_index_updates_schema_version() {
     let city = info.iter().find(|i| i.name == "city").unwrap();
     assert_eq!(city.schema_version, 0);
 
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
-        db.migrate_index("city", 3, |v| Ok(v), token)
+    let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 3, |v| Ok(v), token)?;
+        Ok(db)
     }).unwrap();
 
     let info = db.secondary_indices().unwrap();
@@ -418,11 +420,12 @@ fn test_migrate_index_with_value_transformation() {
     db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "Paris".into()  })).unwrap();
 
     // Transform: lowercase the city before DeriveKey::derive runs.
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
         db.migrate_index("city", 1, |mut p: Person| {
             p.city = p.city.to_lowercase();
             Ok(p)
-        }, token)
+        }, token)?;
+        Ok(db)
     }).unwrap();
 
     // Old keys no longer match.
@@ -443,8 +446,9 @@ fn test_migrate_index_does_not_affect_other_index() {
     db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
 
     // Migrate only "city"; "name" index should be untouched.
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
-        db.migrate_index("city", 1, |v| Ok(v), token)
+    let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_index("city", 1, |v| Ok(v), token)?;
+        Ok(db)
     }).unwrap();
 
     let alice = db.read(|txn| name_idx.lookup(txn, &"Alice".to_string())).unwrap();
@@ -459,11 +463,12 @@ fn test_migrate_index_does_not_modify_primary_records() {
     db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "London".into() })).unwrap();
 
     // Transform city to lowercase for index derivation only.
-    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
         db.migrate_index("city", 1, |mut p: Person| {
             p.city = p.city.to_lowercase();
             Ok(p)
-        }, token)
+        }, token)?;
+        Ok(db)
     }).unwrap();
 
     // Primary record should still have original city casing.

@@ -26,7 +26,7 @@ fn test_single_user_closure_can_write_and_read() {
         db.write(|txn| db.insert(txn, 1u32, &"hello".to_string()))?;
         let val = db.read(|txn| db.get(txn, &1u32))?;
         assert_eq!(val, Some("hello".to_string()));
-        Ok(())
+        Ok(db)
     })
     .unwrap();
 }
@@ -46,14 +46,16 @@ fn test_single_user_closure_propagates_error() {
 fn test_single_user_mode_released_after_closure() {
     let (_dir, db) = common::make_db::<u32, String>();
 
-    // Enter and exit single-user mode via closure.
-    db.as_single_user(TIMEOUT, |_token, _db| Ok(())).unwrap();
+    // Enter and exit single-user mode via closure; rebind to keep the handle.
+    let db = db.as_single_user(TIMEOUT, |_token, db| Ok(db)).unwrap();
 
     // Database is fully usable afterward — we can enter again.
-    db.as_single_user(TIMEOUT, |_token, db| {
-        db.write(|txn| db.insert(txn, 1u32, &"after".to_string()))
-    })
-    .unwrap();
+    let db = db
+        .as_single_user(TIMEOUT, |_token, db| {
+            db.write(|txn| db.insert(txn, 1u32, &"after".to_string()))?;
+            Ok(db)
+        })
+        .unwrap();
 
     let val = db.read(|txn| db.get(txn, &1u32)).unwrap();
     assert_eq!(val, Some("after".to_string()));
@@ -78,7 +80,12 @@ fn test_single_user_wraps_compact() {
     })
     .unwrap();
 
-    db.as_single_user(TIMEOUT, |token, db| db.compact(token)).unwrap();
+    let db = db
+        .as_single_user(TIMEOUT, |token, db| {
+            db.compact(token)?;
+            Ok(db)
+        })
+        .unwrap();
 
     // Records 3 and 4 should still be present.
     let val = db.read(|txn| db.get(txn, &3u32)).unwrap();
@@ -154,12 +161,13 @@ fn test_other_thread_can_operate_after_single_user_released() {
         db2.write(|txn| db2.insert(txn, 1u32, &"from thread".to_string()))
     });
 
-    db.as_single_user(TIMEOUT, |_token, _db| {
-        barrier_enter.wait();
-        barrier_exit.wait();
-        Ok(())
-    })
-    .unwrap();
+    let db = db
+        .as_single_user(TIMEOUT, |_token, db| {
+            barrier_enter.wait();
+            barrier_exit.wait();
+            Ok(db)
+        })
+        .unwrap();
     // Guard is dropped here — signal the other thread.
     barrier_released.wait();
 
@@ -196,6 +204,9 @@ fn test_single_user_timeout_if_transaction_held() {
     // Wait for the other thread's transaction to be live.
     barrier_txn_held.wait();
 
+    // Clone before the failing call so we have a handle for the retry.
+    let db_retry = db.clone();
+
     // Try to enter single-user mode with a short timeout — must fail.
     let result = db.as_single_user(Duration::from_millis(50), |_token, _db| Ok(()));
     assert!(
@@ -209,7 +220,7 @@ fn test_single_user_timeout_if_transaction_held() {
     handle.join().unwrap();
 
     // After the transaction is gone, single-user mode should be acquirable again.
-    db.as_single_user(TIMEOUT, |_token, _db| Ok(())).unwrap();
+    db_retry.as_single_user(TIMEOUT, |_token, _db| Ok(())).unwrap();
 }
 
 // ── re-entry ─────────────────────────────────────────────────────────────── //

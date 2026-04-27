@@ -212,7 +212,9 @@ where
     ///   will never succeed and the call will time out.  Commit or roll back all
     ///   transactions on the calling thread before calling `as_single_user`.
     ///
-    /// # Example
+    /// # Examples
+    ///
+    /// Running compaction — return `db` from the closure to keep using it:
     /// ```
     /// # use tempfile::TempDir;
     /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
@@ -223,15 +225,50 @@ where
     /// # for i in 0u32..5 { db.insert(&mut txn, i, &i.to_string()).unwrap(); }
     /// # for i in 0u32..3 { db.delete(&mut txn, &i).unwrap(); }
     /// # txn.commit().unwrap();
-    /// // Run compact exclusively — no other thread can touch the database.
-    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
+    /// let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///     db.compact(token)?;
+    ///     Ok(db)
+    /// }).unwrap();
     /// ```
-    pub fn as_single_user<F, T>(&self, timeout: Duration, f: F) -> IsamResult<T>
+    ///
+    /// Migrating values to a new type — return the *new* handle from the
+    /// closure, not the original `db`:
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// // db is Isam<u32, String>; migrate to Isam<u32, Vec<u8>>.
+    /// let db: Isam<u32, Vec<u8>> =
+    ///     db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///         db.migrate_values(1, |s: String| Ok(s.into_bytes()), token)
+    ///     }).unwrap();
+    /// ```
+    ///
+    /// # Note on error handling
+    ///
+    /// `as_single_user` consumes `self`.  If it returns `Err` (e.g.
+    /// [`IsamError::Timeout`] or [`IsamError::SingleUserMode`]), the handle is
+    /// dropped.  Clone before calling if you need to retry on failure:
+    ///
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// let result = db.clone().as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    ///     db.compact(token)?;
+    ///     Ok(db)
+    /// });
+    /// ```
+    pub fn as_single_user<F, T>(self, timeout: Duration, f: F) -> IsamResult<T>
     where
         F: FnOnce(&SingleUserToken, Isam<K, V>) -> IsamResult<T>,
     {
         let _guard = self.manager.enter_single_user_mode(timeout)?;
-        f(&SingleUserToken(()), self.clone())
+        f(&SingleUserToken(()), self)
     }
 
     /// Return a [`SecondaryIndexHandle`] for the named index.
@@ -784,11 +821,12 @@ where
     ///
     /// // Rebuild the "city" index, normalizing city names to lowercase
     /// // so the index matches the updated DeriveKey logic.
-    /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    /// let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
     ///     db.migrate_index("city", 1, |mut u: User| {
     ///         u.city = u.city.to_lowercase();
     ///         Ok(u)
-    ///     }, token)
+    ///     }, token)?;
+    ///     Ok(db)
     /// }).unwrap();
     ///
     /// let info = db.secondary_indices().unwrap();

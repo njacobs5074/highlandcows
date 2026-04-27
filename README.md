@@ -155,10 +155,20 @@ std::thread::spawn(move || {
 ```rust
 use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
-db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
     db.compact(token)?;
-    Ok(())
+    Ok(db)
 })?;
+```
+
+When a migration changes the value type, return the *new* handle from the closure rather than the original `db`:
+
+```rust
+// db is Isam<u32, String>; migrate to Isam<u32, Vec<u8>>.
+let db: Isam<u32, Vec<u8>> =
+    db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+        db.migrate_values(1, |s: String| Ok(s.into_bytes()), token)
+    })?;
 ```
 
 `DEFAULT_SINGLE_USER_TIMEOUT` is exported at the crate root and equals 30 seconds. Pass a custom `Duration` if you need a shorter or longer window.
@@ -177,7 +187,7 @@ If step 2 does not complete within `timeout`, the flag is cleared and `IsamError
 Single-user mode is intended for operations that must not run concurrently with reads or writes:
 
 ```rust
-db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
     // Reclaim disk space from deleted/updated records.
     db.compact(token)?;
 
@@ -188,7 +198,7 @@ db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
         Ok(u)
     }, token)?;
 
-    Ok(())
+    Ok(db)
 })?;
 ```
 
@@ -196,6 +206,7 @@ Inside the closure you can call `write`, `read`, `begin_transaction`, and any of
 
 #### Caveats
 
+- **Consumes `self`**: `as_single_user` takes ownership of the handle. Return `db` from the closure (`Ok(db)`) to keep using it afterward. On error, the handle is dropped — clone before calling if you need to retry on failure.
 - **Deadlock if you hold a transaction**: `as_single_user` waits for the storage lock to be free. If the calling thread already holds an open `Transaction`, the storage lock is already held by that same thread, so the spin will never succeed and the call will time out with `IsamError::Timeout`. Commit or roll back all open transactions on the calling thread before calling `as_single_user`.
 - **Not re-entrant**: calling `as_single_user` again from inside the closure returns `IsamError::SingleUserMode`.
 - **In-process only**: the exclusive flag is an in-memory atomic; it does not prevent access from a separate process opening the same database files.
@@ -294,7 +305,7 @@ handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Single-user mode
-db.as_single_user(timeout, |token, db| { ... })  -> IsamResult<T>  // projects token + db clone into closure
+db.as_single_user(timeout, |token, db| { ... })  -> IsamResult<T>  // consumes db; return it from closure to keep using it
 
 // Offline administration (require a &SingleUserToken — must be called inside as_single_user)
 db.compact(token)                      -> IsamResult<()>

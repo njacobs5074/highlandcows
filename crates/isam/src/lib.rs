@@ -142,11 +142,12 @@
 //! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
 //! // Rebuild the city index, normalizing city names to lowercase so the
 //! // on-disk data matches the updated DeriveKey logic.  Bumps schema_version to 1.
-//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+//! let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
 //!     db.migrate_index("city", 1, |mut u: User| {
 //!         u.city = u.city.to_lowercase();
 //!         Ok(u)
-//!     }, token)
+//!     }, token)?;
+//!     Ok(db)
 //! }).unwrap();
 //!
 //! let info = db.secondary_indices().unwrap();
@@ -169,7 +170,27 @@
 //! # let dir = TempDir::new().unwrap();
 //! # let path = dir.path().join("db");
 //! # let db: Isam<u32, String> = Isam::create(&path).unwrap();
-//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
+//! let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+//!     db.compact(token)?;
+//!     Ok(db)
+//! }).unwrap();
+//! ```
+//!
+//! When a migration changes the value type, return the *new* handle from the
+//! closure rather than the original `db`:
+//!
+//! ```
+//! # use tempfile::TempDir;
+//! use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+//!
+//! # let dir = TempDir::new().unwrap();
+//! # let path = dir.path().join("db");
+//! # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+//! // db is Isam<u32, String>; migrate to Isam<u32, Vec<u8>>.
+//! let db: Isam<u32, Vec<u8>> =
+//!     db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+//!         db.migrate_values(1, |s: String| Ok(s.into_bytes()), token)
+//!     }).unwrap();
 //! ```
 //!
 //! [`DEFAULT_SINGLE_USER_TIMEOUT`] is 30 seconds.  Pass a custom
@@ -208,7 +229,7 @@
 //! # let path = dir.path().join("db");
 //! # let db = Isam::<u64, User>::builder().with_index("city", CityIndex).create(&path).unwrap();
 //! # db.write(|txn| db.insert(txn, 1u64, &User { name: "Alice".into(), city: "London".into() })).unwrap();
-//! db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+//! let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
 //!     // Reclaim disk space from deleted/updated records.
 //!     db.compact(token)?;
 //!     // Rebuild a secondary index after updating the DeriveKey logic.
@@ -216,7 +237,7 @@
 //!         u.city = u.city.to_lowercase();
 //!         Ok(u)
 //!     }, token)?;
-//!     Ok(())
+//!     Ok(db)
 //! }).unwrap();
 //! ```
 //!
@@ -227,6 +248,10 @@
 //!
 //! ### Caveats
 //!
+//! - **Consumes `self`**: `as_single_user` takes ownership of the handle.
+//!   Return `db` from the closure (as `Ok(db)`) if you need to keep using
+//!   it afterward.  If the call returns `Err`, the handle is dropped; clone
+//!   before calling if you need to retry on failure.
 //! - **Deadlock if you hold a transaction**: `as_single_user` waits for the
 //!   storage lock to be free.  If the calling thread already holds an open
 //!   [`Transaction`], the storage lock is already taken, so the spin will
