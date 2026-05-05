@@ -18,6 +18,34 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify versions are consistent
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          EXPECTED="${TAG#v}"
+
+          ISAM_VER=$(grep '^version' crates/isam/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          HC_VER=$(grep '^version' crates/highlandcows/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          README_HC=$(grep '^highlandcows = ' README.md | sed 's/highlandcows = "\(.*\)"/\1/')
+          README_ISAM=$(grep '^highlandcows-isam = ' README.md | sed 's/highlandcows-isam = "\(.*\)"/\1/')
+
+          echo "Tag:                      $EXPECTED"
+          echo "isam/Cargo.toml:          $ISAM_VER"
+          echo "highlandcows/Cargo.toml:  $HC_VER"
+          echo "README highlandcows:      $README_HC"
+          echo "README highlandcows-isam: $README_ISAM"
+
+          FAILED=0
+          [ "$ISAM_VER"    = "$EXPECTED" ] || { echo "MISMATCH: crates/isam/Cargo.toml"; FAILED=1; }
+          [ "$HC_VER"      = "$EXPECTED" ] || { echo "MISMATCH: crates/highlandcows/Cargo.toml"; FAILED=1; }
+          [ "$README_HC"   = "$EXPECTED" ] || { echo "MISMATCH: README.md (highlandcows)"; FAILED=1; }
+          [ "$README_ISAM" = "$EXPECTED" ] || { echo "MISMATCH: README.md (highlandcows-isam)"; FAILED=1; }
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "Run './scripts/release.sh $EXPECTED' locally, commit, and re-push the tag."
+            exit 1
+          fi
+          echo "All versions consistent — proceeding to publish."
+
       - name: Publish highlandcows-isam
         run: cargo publish -p highlandcows-isam
         env:
