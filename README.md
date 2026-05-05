@@ -378,6 +378,58 @@ highlandcows/
 
 ---
 
+## Developer Notes
+
+### Prerequisites
+
+Rust 1.70 or later. Install via [rustup](https://rustup.rs) if needed.
+
+### Daily development
+
+Run these from the workspace root:
+
+```sh
+cargo build        # build all crates
+cargo test         # run all tests
+cargo clippy       # lint
+cargo fmt          # format
+```
+
+### Branching
+
+For any non-trivial change, create a branch before editing. Follow conventional-commit naming:
+
+| Type | Example branch |
+|------|----------------|
+| Feature | `feat/range-search` |
+| Bug fix | `fix/leaf-merge-underflow` |
+| Refactor | `refactor/btree-ordering` |
+| Docs | `docs/readme-api-section` |
+| Chore | `chore/update-dependencies` |
+
+Typo fixes and trivial comment edits may go directly on the current branch.
+
+### Releasing a new version
+
+Use the release script to bump versions, commit, and tag atomically:
+
+```sh
+./scripts/release.sh 0.4.0
+```
+
+This patches the version in both `Cargo.toml` files and the `README.md` usage examples,
+runs `cargo check` to validate the workspace compiles, commits all changes, and creates
+an annotated `v0.4.0` tag. Then push:
+
+```sh
+git push && git push origin v0.4.0
+```
+
+The `publish.yml` CI workflow will verify all version strings match the tag before
+publishing to crates.io, and will fail with a diagnostic if anything is out of sync.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
