@@ -1,5 +1,32 @@
 mod common;
 use common::{make_person_db, CityIndex, NameIndex, Person};
+
+// ── Custom-ordering key type ──────────────────────────────────────────────── //
+
+/// Reversed-alphabetical string wrapper.  The B-tree stores entries using this
+/// `Ord`, so a range scan returns them in reverse alphabetical order.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct ReversedString(String);
+
+impl PartialOrd for ReversedString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ReversedString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.0.cmp(&self.0)
+    }
+}
+
+struct ReversedCityIndex;
+impl highlandcows_isam::DeriveKey<Person> for ReversedCityIndex {
+    type Key = ReversedString;
+    fn derive(p: &Person) -> ReversedString {
+        ReversedString(p.city.clone())
+    }
+}
 use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 use tempfile::TempDir;
 
@@ -509,4 +536,110 @@ fn test_migrate_index_schema_version_persists_across_reopen() {
     let info = db.secondary_indices().unwrap();
     let city = info.iter().find(|i| i.name == "city").unwrap();
     assert_eq!(city.schema_version, 2, "schema version must survive reopen");
+}
+
+// ── Custom ordering ───────────────────────────────────────────────────────── //
+
+/// The B-tree uses `Key::Ord` for all inserts and range traversal.  A custom
+/// `Ord` therefore controls the iteration order of a secondary-index range scan.
+/// Here `ReversedString` makes the B-tree store cities in reverse alphabetical
+/// order, so a full range scan returns them last-to-first alphabetically.
+#[test]
+fn test_custom_ord_controls_range_scan_order() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("rev_people");
+
+    let db = Isam::<u32, Person>::builder()
+        .with_index("rev_city", ReversedCityIndex)
+        .create(&path)
+        .unwrap();
+
+    // Insert in alphabetical order; the B-tree will store them in reverse order.
+    db.write(|txn| db.insert(txn, 1, &Person { name: "Alice".into(), city: "Amsterdam".into() })).unwrap();
+    db.write(|txn| db.insert(txn, 2, &Person { name: "Bob".into(),   city: "London".into()    })).unwrap();
+    db.write(|txn| db.insert(txn, 3, &Person { name: "Carol".into(), city: "Paris".into()     })).unwrap();
+    db.write(|txn| db.insert(txn, 4, &Person { name: "Dave".into(),  city: "Tokyo".into()     })).unwrap();
+
+    let rev_city_idx = db.index::<ReversedCityIndex>("rev_city");
+
+    // Full range scan — should come back in reverse alphabetical order.
+    let all = db.read(|txn| rev_city_idx.range(txn, ..)).unwrap();
+    let cities: Vec<&str> = all.iter().map(|(sk, _)| sk.0.as_str()).collect();
+    assert_eq!(cities, vec!["Tokyo", "Paris", "London", "Amsterdam"]);
+
+    // Bounded range: from "Paris" down (inclusive) — Paris and London and Amsterdam.
+    let lo = ReversedString("Paris".into());
+    let bounded = db.read(|txn| rev_city_idx.range(txn, lo..)).unwrap();
+    let bcities: Vec<&str> = bounded.iter().map(|(sk, _)| sk.0.as_str()).collect();
+    assert_eq!(bcities, vec!["Paris", "London", "Amsterdam"]);
+}
+
+// ── Multi-level sort ──────────────────────────────────────────────────────── //
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct FullPerson {
+    first_name: String,
+    surname: String,
+    city: String,
+}
+
+/// Derives `(city, surname, first_name)` so the B-tree orders records by city
+/// first, then surname within the same city, then first name as a final tiebreaker.
+struct CitySurnameFirstNameIndex;
+impl highlandcows_isam::DeriveKey<FullPerson> for CitySurnameFirstNameIndex {
+    type Key = (String, String, String);
+    fn derive(p: &FullPerson) -> (String, String, String) {
+        (p.city.clone(), p.surname.clone(), p.first_name.clone())
+    }
+}
+
+/// A tuple `Key` gives multi-level ordering for free: `(String, String, String)`
+/// sorts lexicographically by city, then surname, then first name.
+#[test]
+fn test_multi_level_sort_city_surname_first_name() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("full_people");
+
+    let db = Isam::<u32, FullPerson>::builder()
+        .with_index("city_name", CitySurnameFirstNameIndex)
+        .create(&path)
+        .unwrap();
+
+    db.write(|txn| db.insert(txn, 1, &FullPerson { first_name: "Alice".into(), surname: "Zhu".into(),      city: "London".into()    })).unwrap();
+    db.write(|txn| db.insert(txn, 2, &FullPerson { first_name: "Bob".into(),   surname: "Anderson".into(), city: "London".into()    })).unwrap();
+    db.write(|txn| db.insert(txn, 3, &FullPerson { first_name: "Carol".into(), surname: "Anderson".into(), city: "London".into()    })).unwrap();
+    db.write(|txn| db.insert(txn, 4, &FullPerson { first_name: "Dave".into(),  surname: "Miller".into(),   city: "Paris".into()     })).unwrap();
+    db.write(|txn| db.insert(txn, 5, &FullPerson { first_name: "Eve".into(),   surname: "Anderson".into(), city: "Amsterdam".into() })).unwrap();
+
+    let idx = db.index::<CitySurnameFirstNameIndex>("city_name");
+
+    let all = db.read(|txn| idx.range(txn, ..)).unwrap();
+
+    // Extract (city, surname, first_name) from each bucket's key for easy assertion.
+    let keys: Vec<(&str, &str, &str)> = all
+        .iter()
+        .map(|((city, surname, first_name), _)| (city.as_str(), surname.as_str(), first_name.as_str()))
+        .collect();
+
+    assert_eq!(keys, vec![
+        ("Amsterdam", "Anderson", "Eve"),   // Amsterdam before London before Paris
+        ("London",    "Anderson", "Bob"),   // Anderson before Zhu within London
+        ("London",    "Anderson", "Carol"), // Bob before Carol within same surname
+        ("London",    "Zhu",      "Alice"),
+        ("Paris",     "Miller",   "Dave"),
+    ]);
+
+    // Range scan scoped to London only.
+    let london_start = ("London".to_string(), String::new(),      String::new());
+    let london_end   = ("London".to_string(), "\u{10FFFF}".into(), String::new());
+    let london = db.read(|txn| idx.range(txn, london_start..=london_end)).unwrap();
+    let london_keys: Vec<(&str, &str, &str)> = london
+        .iter()
+        .map(|((city, surname, first_name), _)| (city.as_str(), surname.as_str(), first_name.as_str()))
+        .collect();
+    assert_eq!(london_keys, vec![
+        ("London", "Anderson", "Bob"),
+        ("London", "Anderson", "Carol"),
+        ("London", "Zhu",      "Alice"),
+    ]);
 }

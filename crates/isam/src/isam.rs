@@ -42,6 +42,15 @@ fn clone_bound<K: Clone>(b: Bound<&K>) -> Bound<K> {
     }
 }
 
+/// Borrow the inner `Vec<u8>` of a `Bound<Vec<u8>>` as a `Bound<&[u8]>`.
+fn as_bound_bytes(b: &Bound<Vec<u8>>) -> Bound<&[u8]> {
+    match b {
+        Bound::Included(v) => Bound::Included(v.as_slice()),
+        Bound::Excluded(v) => Bound::Excluded(v.as_slice()),
+        Bound::Unbounded => Bound::Unbounded,
+    }
+}
+
 // ── Constants ────────────────────────────────────────────────────────────── //
 
 /// Default timeout for [`Isam::as_single_user`].
@@ -1295,6 +1304,99 @@ where
                 results.push((pk, value));
             }
         }
+        Ok(results)
+    }
+
+    /// Return all `(secondary_key, records)` pairs whose secondary key falls
+    /// within `range`, in secondary-key order.
+    ///
+    /// `range` accepts any of Rust's built-in range expressions: `a..b`,
+    /// `a..=b`, `a..`, `..b`, `..=b`, `..`.
+    ///
+    /// Each item is `(SK, Vec<(K, V)>)` — one entry per distinct secondary key,
+    /// with all primary records that produced that key grouped together.
+    ///
+    /// # Example
+    /// ```
+    /// # use tempfile::TempDir;
+    /// use serde::{Serialize, Deserialize};
+    /// use highlandcows_isam::{Isam, DeriveKey};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+    /// struct User { name: String, city: String }
+    ///
+    /// struct CityIndex;
+    /// impl DeriveKey<User> for CityIndex {
+    ///     type Key = String;
+    ///     fn derive(u: &User) -> String { u.city.clone() }
+    /// }
+    ///
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("users");
+    /// let db = Isam::<u64, User>::builder()
+    ///     .with_index("city", CityIndex)
+    ///     .create(&path)
+    ///     .unwrap();
+    /// let city_idx = db.index::<CityIndex>("city");
+    ///
+    /// db.write(|txn| {
+    ///     db.insert(txn, 1, &User { name: "Alice".into(), city: "London".into() })?;
+    ///     db.insert(txn, 2, &User { name: "Bob".into(),   city: "London".into() })?;
+    ///     db.insert(txn, 3, &User { name: "Carol".into(), city: "Paris".into()  })
+    /// }).unwrap();
+    ///
+    /// // All cities from "L" onward.
+    /// let mut txn = db.begin_transaction().unwrap();
+    /// let results = city_idx.range(&mut txn, "London".to_string()..).unwrap();
+    /// txn.commit().unwrap();
+    /// assert_eq!(results.len(), 2); // London and Paris
+    /// assert_eq!(results[0].0, "London");
+    /// assert_eq!(results[1].0, "Paris");
+    /// ```
+    pub fn range<R>(
+        &self,
+        txn: &mut Transaction<'_, K, V>,
+        range: R,
+    ) -> IsamResult<Vec<(SK, Vec<(K, V)>)>>
+    where
+        R: RangeBounds<SK>,
+    {
+        let start_bound: Bound<Vec<u8>> = match range.start_bound() {
+            Bound::Included(sk) => Bound::Included(bincode::serialize(sk)?),
+            Bound::Excluded(sk) => Bound::Excluded(bincode::serialize(sk)?),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let end_bound: Bound<Vec<u8>> = match range.end_bound() {
+            Bound::Included(sk) => Bound::Included(bincode::serialize(sk)?),
+            Bound::Excluded(sk) => Bound::Excluded(bincode::serialize(sk)?),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        let sk_pks: Vec<(Vec<u8>, Vec<K>)> = {
+            let storage = txn.storage_mut();
+            match storage.secondary_indices.iter_mut().find(|si| si.name() == self.name) {
+                None => Vec::new(),
+                Some(si) => si.range_primary_keys(
+                    as_bound_bytes(&start_bound),
+                    as_bound_bytes(&end_bound),
+                )?,
+            }
+        };
+
+        let storage = txn.storage_mut();
+        let mut results = Vec::with_capacity(sk_pks.len());
+        for (sk_bytes, pks) in sk_pks {
+            let sk: SK = bincode::deserialize(&sk_bytes)?;
+            let mut records = Vec::with_capacity(pks.len());
+            for pk in pks {
+                if let Some(rec) = storage.index.search(&pk)? {
+                    let value = storage.store.read_value(rec)?;
+                    records.push((pk, value));
+                }
+            }
+            results.push((sk, records));
+        }
+
         Ok(results)
     }
 }
