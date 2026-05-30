@@ -1,0 +1,45 @@
+[package]
+name        = "highlandcows-eventkit"
+version     = "0.1.0"
+edition     = "2021"
+description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Reminders"
+license     = "MIT"
+repository  = "https://github.com/njacobs5074/highlandcows"
+homepage    = "https://github.com/njacobs5074/highlandcows"
+keywords    = ["eventkit", "reminders", "macos", "apple"]
+categories  = ["os::macos-apis"]
+
+[lib]
+name = "highlandcows_eventkit"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2            = "0.6.4"
+objc2-event-kit  = { version = "0.3.2", features = [
+    "EKEventStore",
+    "EKReminder",
+    "EKCalendar",
+    "EKCalendarItem",
+    "EKObject",
+    "EKTypes",
+    "EKError",
+    "EKSource",
+] }
+objc2-foundation = { version = "0.3.2", features = [
+    "NSArray",
+    "NSCalendar",
+    "NSDate",
+    "NSError",
+    "NSPredicate",
+    "NSString",
+    "NSURL",
+] }
+block2    = "0.6.2"
+thiserror = "1"
+chrono    = { version = "0.4", features = ["std"], default-features = false }
+
+[features]
+default = []
+tokio = ["dep:tokio"]
+
+[dependencies]
+tokio = { version = "1", features = ["sync"], optional = true }
