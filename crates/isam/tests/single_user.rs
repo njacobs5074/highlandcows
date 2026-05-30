@@ -1,6 +1,7 @@
 /// Integration tests for single-user mode (`Isam::as_single_user`).
 mod common;
 
+use std::assert_matches;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;
@@ -39,7 +40,7 @@ fn test_single_user_closure_propagates_error() {
         Err(IsamError::KeyNotFound)
     });
 
-    assert!(matches!(result, Err(IsamError::KeyNotFound)));
+    assert_matches!(result, Err(IsamError::KeyNotFound));
 }
 
 #[test]
@@ -127,11 +128,7 @@ fn test_other_thread_blocked_during_single_user_mode() {
     assert!(result.is_ok());
 
     let thread_result = handle.join().unwrap();
-    assert!(
-        matches!(thread_result, Err(IsamError::SingleUserMode)),
-        "expected SingleUserMode, got: {:?}",
-        thread_result
-    );
+    assert_matches!(thread_result, Err(IsamError::SingleUserMode));
 }
 
 #[test]
@@ -152,7 +149,7 @@ fn test_other_thread_can_operate_after_single_user_released() {
         barrier_enter2.wait();
         // Confirm we are blocked.
         let blocked = db2.write(|txn| db2.insert(txn, 1u32, &"from thread".to_string()));
-        assert!(matches!(blocked, Err(IsamError::SingleUserMode)));
+        assert_matches!(blocked, Err(IsamError::SingleUserMode));
         // Signal main thread that we have confirmed blockage.
         barrier_exit2.wait();
         // Wait until the main thread confirms the guard has been dropped.
@@ -209,11 +206,7 @@ fn test_single_user_timeout_if_transaction_held() {
 
     // Try to enter single-user mode with a short timeout — must fail.
     let result = db.as_single_user(Duration::from_millis(50), |_token, _db| Ok(()));
-    assert!(
-        matches!(result, Err(IsamError::Timeout)),
-        "expected Timeout, got: {:?}",
-        result
-    );
+    assert_matches!(result, Err(IsamError::Timeout));
 
     // Release the other thread's transaction.
     barrier_release.wait();
@@ -235,9 +228,5 @@ fn test_single_user_mode_not_reentrant() {
         db.as_single_user(TIMEOUT, |_token, _db| Ok(()))
     });
 
-    assert!(
-        matches!(result, Err(IsamError::SingleUserMode)),
-        "expected SingleUserMode on re-entry, got: {:?}",
-        result
-    );
+    assert_matches!(result, Err(IsamError::SingleUserMode));
 }

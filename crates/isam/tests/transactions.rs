@@ -1,6 +1,7 @@
 mod common;
 use common::make_db;
 use highlandcows_isam::{IsamError, Isam};
+use std::assert_matches;
 use tempfile::TempDir;
 
 // ── Transaction semantics ─────────────────────────────────────────────── //
@@ -65,7 +66,7 @@ fn test_transaction_partial_failure_rolls_back_all() {
         let mut txn = db.begin_transaction().unwrap();
         db.insert(&mut txn, 1, &"a".to_string()).unwrap();
         let err = db.insert(&mut txn, 2, &"b".to_string()).unwrap_err();
-        assert!(matches!(err, IsamError::DuplicateKey));
+        assert_matches!(err, IsamError::DuplicateKey);
         // drop → auto rollback of key 1
     }
 
@@ -227,7 +228,7 @@ fn test_write_rolls_back_on_error() {
         Ok(())
     });
 
-    assert!(matches!(result, Err(IsamError::DuplicateKey)));
+    assert_matches!(result, Err(IsamError::DuplicateKey));
     assert_eq!(db.read(|txn| db.get(txn, &2)).unwrap(), None);
 }
 
