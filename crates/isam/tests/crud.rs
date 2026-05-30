@@ -1,6 +1,7 @@
 mod common;
 use common::make_db;
 use highlandcows_isam::{IsamError, Isam};
+use std::assert_matches;
 
 // ── Basic CRUD ─────────────────────────────────────────────────────────── //
 
@@ -54,7 +55,7 @@ fn test_update_missing_key_returns_err() {
     db.insert(&mut txn, 2, &"two".to_string()).unwrap();
     db.insert(&mut txn, 3, &"three".to_string()).unwrap();
     let err = db.update(&mut txn, 999, &"x".to_string()).unwrap_err();
-    assert!(matches!(err, IsamError::KeyNotFound));
+    assert_matches!(err, IsamError::KeyNotFound);
     txn.commit().unwrap();
 }
 
@@ -64,6 +65,6 @@ fn test_insert_duplicate_key_returns_err() {
     let mut txn = db.begin_transaction().unwrap();
     db.insert(&mut txn, 1, &"first".to_string()).unwrap();
     let err = db.insert(&mut txn, 1, &"second".to_string()).unwrap_err();
-    assert!(matches!(err, IsamError::DuplicateKey));
+    assert_matches!(err, IsamError::DuplicateKey);
     txn.commit().unwrap();
 }
