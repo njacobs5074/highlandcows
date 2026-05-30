@@ -13,6 +13,7 @@
 /// | `<base>_<name>.sidb` | Append-only store of serialised `Vec<K>` buckets |
 /// | `<base>_<name>.sidx` | B-tree (`SK → RecordRef`) pointing into `.sidb` |
 use std::marker::PhantomData;
+use std::ops::Bound;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
@@ -29,6 +30,37 @@ use crate::store::DataStore;
 /// Implement this trait on a marker struct, one per secondary index.
 /// For composite indices in the future, set `Key` to a tuple type —
 /// no change to this trait is required.
+///
+/// # Correctness
+///
+/// The secondary index B-tree routes all inserts, lookups, and range queries
+/// through `Key`'s [`Ord`] implementation — **not** raw byte comparison.
+/// Your `Ord` implementation must be a valid *total order*:
+///
+/// - **Transitivity**: if `a ≤ b` and `b ≤ c` then `a ≤ c`.
+/// - **Antisymmetry**: if `a ≤ b` and `b ≤ a` then `a == b`.
+/// - **Totality**: every pair of keys is comparable (no `None` from `partial_cmp`).
+/// - **Consistency**: `PartialOrd::partial_cmp(a, b) == Some(Ord::cmp(a, b))` always.
+///
+/// Violating any of these properties will silently corrupt the B-tree's internal
+/// node ordering, causing missed lookups, phantom results, or incorrect range
+/// iteration — with no runtime error to signal the problem.
+///
+/// # Custom ordering
+///
+/// Because the B-tree uses `Key::cmp` for all inserts and range traversal, you
+/// can control the iteration order of a secondary-index range scan simply by
+/// choosing a `Key` type with the desired `Ord` behaviour.  For example,
+/// wrapping `String` in a newtype whose `Ord` reverses the comparison stores
+/// entries in reverse alphabetical order, so range scans return them
+/// last-to-first alphabetically.
+///
+/// Note that **identity** — which bucket a key lands in — is based on the
+/// serialised byte representation, not on `Ord`.  Two values that are `Equal`
+/// under a custom `Ord` but serialise to different bytes (e.g. `"London"` vs
+/// `"LONDON"` with a case-insensitive comparator) are stored as separate
+/// entries.  To make case variants share a bucket, normalise in `derive`
+/// (e.g. `value.city.to_lowercase()`) rather than relying on `Ord`.
 ///
 /// # Example
 /// ```
@@ -73,6 +105,14 @@ pub(crate) trait AnySecondaryIndex<K, V>: Send {
 
     /// Return all primary keys whose secondary key serialises to `sk_bytes`.
     fn lookup_primary_keys(&mut self, sk_bytes: &[u8]) -> IsamResult<Vec<K>>;
+
+    /// Return `(sk_bytes, primary_keys)` pairs for every secondary key within
+    /// the given byte-serialised bounds, in secondary-key order.
+    fn range_primary_keys(
+        &mut self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+    ) -> IsamResult<Vec<(Vec<u8>, Vec<K>)>>;
 
     fn fsync(&mut self) -> IsamResult<()>;
     fn name(&self) -> &str;
@@ -239,6 +279,61 @@ where
     fn lookup_primary_keys(&mut self, sk_bytes: &[u8]) -> IsamResult<Vec<K>> {
         let sk: E::Key = bincode::deserialize(sk_bytes)?;
         self.read_pks(&sk)
+    }
+
+    fn range_primary_keys(
+        &mut self,
+        start: Bound<&[u8]>,
+        end: Bound<&[u8]>,
+    ) -> IsamResult<Vec<(Vec<u8>, Vec<K>)>> {
+        let start_bound: Bound<E::Key> = match start {
+            Bound::Included(b) => Bound::Included(bincode::deserialize(b)?),
+            Bound::Excluded(b) => Bound::Excluded(bincode::deserialize(b)?),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        let end_bound: Bound<E::Key> = match end {
+            Bound::Included(b) => Bound::Included(bincode::deserialize(b)?),
+            Bound::Excluded(b) => Bound::Excluded(bincode::deserialize(b)?),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+
+        let start_leaf_id = match &start_bound {
+            Bound::Included(k) | Bound::Excluded(k) => self.btree.find_leaf_for_key(k)?,
+            Bound::Unbounded => self.btree.first_leaf_id()?,
+        };
+
+        let mut results = Vec::new();
+        let mut leaf_id = start_leaf_id;
+
+        'outer: while leaf_id != 0 {
+            let (entries, next_leaf_id) = self.btree.read_leaf(leaf_id)?;
+
+            for (sk, rec) in entries {
+                let in_start = match &start_bound {
+                    Bound::Included(lo) => &sk >= lo,
+                    Bound::Excluded(lo) => &sk > lo,
+                    Bound::Unbounded => true,
+                };
+                let in_end = match &end_bound {
+                    Bound::Included(hi) => &sk <= hi,
+                    Bound::Excluded(hi) => &sk < hi,
+                    Bound::Unbounded => true,
+                };
+
+                if !in_end {
+                    break 'outer;
+                }
+                if in_start {
+                    let sk_bytes = bincode::serialize(&sk)?;
+                    let pks: Vec<K> = self.store.read_value(rec)?;
+                    results.push((sk_bytes, pks));
+                }
+            }
+
+            leaf_id = next_leaf_id;
+        }
+
+        Ok(results)
     }
 
     fn fsync(&mut self) -> IsamResult<()> {
