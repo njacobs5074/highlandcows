@@ -1,4 +1,4 @@
-name: Rust
+name: Rust (x86-64)
 
 on:
   push:
@@ -14,12 +14,7 @@ env:
 
 jobs:
   build:
-
-    strategy:
-      matrix:
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-
+    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
