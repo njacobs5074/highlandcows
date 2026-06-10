@@ -7,7 +7,7 @@ pub struct FullAccessToken(pub(crate) ());
 ///
 /// Note: EventKit does not expose a write-only mode for Reminders (only for
 /// Calendar events). This token is provided for API symmetry and future
-/// compatibility; [`ReminderStore::authorize_write_only`] delegates to full
+/// compatibility; [`crate::ReminderStore::authorize_write_only`] delegates to full
 /// access for Reminders.
 pub struct WriteOnlyToken(pub(crate) ());
 

@@ -1,18 +1,9 @@
-use objc2_event_kit::{EKAuthorizationStatus, EKEntityType};
+use objc2_event_kit::EKAuthorizationStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EkEntityType {
     Event,
     Reminder,
-}
-
-impl EkEntityType {
-    pub(crate) fn to_ek(self) -> EKEntityType {
-        match self {
-            EkEntityType::Event => EKEntityType::Event,
-            EkEntityType::Reminder => EKEntityType::Reminder,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

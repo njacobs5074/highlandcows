@@ -1,10 +1,11 @@
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::Arc;
 
-use objc2_event_kit::{EKAuthorizationStatus, EKEntityType, EKEventStore};
+use objc2::runtime::Bool;
+use objc2_event_kit::{EKEntityType, EKEventStore, EKReminder};
 use objc2_foundation::NSError;
 
-use crate::auth::{FullAccess, FullAccessToken, RemindersAccess, WriteOnlyToken};
+use crate::auth::{FullAccessToken, RemindersAccess, WriteOnlyToken};
 use crate::builder::ReminderStoreBuilder;
 use crate::error::{EventKitError, EventKitResult};
 use crate::inner::Inner;
@@ -39,9 +40,8 @@ impl ReminderStore {
 
     /// Return the current Reminders authorization status without prompting.
     pub fn authorization_status() -> EkAuthStatus {
-        let status = unsafe {
-            EKEventStore::authorizationStatusForEntityType(EKEntityType::Reminder)
-        };
+        let status =
+            unsafe { EKEventStore::authorizationStatusForEntityType(EKEntityType::Reminder) };
         EkAuthStatus::from(status)
     }
 
@@ -66,8 +66,8 @@ impl ReminderStore {
         // Clone the Arc so the block can own a reference independent of `self`.
         let inner = Arc::clone(&self.inner);
 
-        let block = block2::RcBlock::new(move |granted: bool, _err: *mut NSError| {
-            let result = if granted {
+        let block = block2::RcBlock::new(move |granted: Bool, _err: *mut NSError| {
+            let result = if granted.as_bool() {
                 Ok(FullAccessToken(()))
             } else {
                 Err(EventKitError::AuthorizationDenied)
@@ -75,13 +75,13 @@ impl ReminderStore {
             let _ = tx.send(result);
             // inner is kept alive until the block fires, ensuring EKEventStore
             // is not dropped before the callback completes.
-            drop(inner);
+            let _ = &inner;
         });
 
         unsafe {
             self.inner
                 .0
-                .requestFullAccessToRemindersWithCompletion(&block);
+                .requestFullAccessToRemindersWithCompletion(block2::RcBlock::as_ptr(&block));
         }
 
         rx.recv()
@@ -113,32 +113,18 @@ impl ReminderStore {
     // ── Reminder CRUD ─────────────────────────────────────────────────────────
 
     /// Fetch a single reminder by its stable identifier.
-    pub fn fetch(
-        &self,
-        id: &str,
-        _token: &FullAccessToken,
-    ) -> EventKitResult<Option<Reminder>> {
+    pub fn fetch(&self, id: &str, _token: &FullAccessToken) -> EventKitResult<Option<Reminder>> {
         use objc2_foundation::NSString;
 
         let ns_id = NSString::from_str(id);
-        let item = unsafe {
-            self.inner.0.calendarItemWithIdentifier(&ns_id)
-        };
+        let item = unsafe { self.inner.0.calendarItemWithIdentifier(&ns_id) };
 
         match item {
             None => Ok(None),
-            Some(item) => {
-                use objc2::ClassType;
-                use objc2_event_kit::EKReminder;
-                if item.is_kind_of::<EKReminder>() {
-                    let ek_reminder = unsafe {
-                        &*(item.as_ref() as *const _ as *const EKReminder)
-                    };
-                    Ok(Some(Reminder::from_ek(ek_reminder)))
-                } else {
-                    Err(EventKitError::ReminderNotFound(id.to_owned()))
-                }
-            }
+            Some(item) => match item.downcast::<EKReminder>() {
+                Ok(ek_reminder) => Ok(Some(Reminder::from_ek(&ek_reminder))),
+                Err(_) => Err(EventKitError::ReminderNotFound(id.to_owned())),
+            },
         }
     }
 
@@ -183,63 +169,31 @@ impl ReminderStore {
             }
         }
 
-        let mut err: *mut NSError = std::ptr::null_mut();
-        let ok = unsafe {
-            self.inner
-                .0
-                .saveReminder_commit_error(&ek, true, &mut err)
-        };
-
-        if ok {
-            let id = unsafe { ek.calendarItemIdentifier() }
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            Ok(id)
-        } else {
-            let msg = nserror_message(err);
-            Err(EventKitError::SaveFailed(msg))
+        match unsafe { self.inner.0.saveReminder_commit_error(&ek, true) } {
+            Ok(()) => Ok(unsafe { ek.calendarItemIdentifier().to_string() }),
+            Err(err) => Err(EventKitError::SaveFailed(nserror_message(&err))),
         }
     }
 
     /// Remove a reminder by its identifier.
-    pub fn remove(
-        &self,
-        id: &str,
-        token: &FullAccessToken,
-    ) -> EventKitResult<()> {
-        let reminder = self
-            .fetch(id, token)?
+    pub fn remove(&self, id: &str, _token: &FullAccessToken) -> EventKitResult<()> {
+        use objc2_foundation::NSString;
+
+        let ns_id = NSString::from_str(id);
+        let ek = unsafe { self.inner.0.calendarItemWithIdentifier(&ns_id) }
+            .and_then(|item| item.downcast::<EKReminder>().ok())
             .ok_or_else(|| EventKitError::ReminderNotFound(id.to_owned()))?;
 
-        let ek = reminder.to_ek(&self.inner.0)?;
-        let mut err: *mut NSError = std::ptr::null_mut();
-        let ok = unsafe {
-            self.inner
-                .0
-                .removeReminder_commit_error(&ek, true, &mut err)
-        };
-
-        if ok {
-            Ok(())
-        } else {
-            let msg = nserror_message(err);
-            Err(EventKitError::RemoveFailed(msg))
-        }
+        unsafe { self.inner.0.removeReminder_commit_error(&ek, true) }
+            .map_err(|err| EventKitError::RemoveFailed(nserror_message(&err)))
     }
 
     // ── Reminder lists ────────────────────────────────────────────────────────
 
     /// Return all Reminder lists visible to this store.
     pub fn lists(&self, _token: &FullAccessToken) -> EventKitResult<Vec<ReminderList>> {
-        let cals = unsafe {
-            self.inner
-                .0
-                .calendarsForEntityType(EKEntityType::Reminder)
-        };
-        let result = unsafe {
-            cals.iter().map(|c| ReminderList::from_ek(c)).collect()
-        };
-        Ok(result)
+        let cals = unsafe { self.inner.0.calendarsForEntityType(EKEntityType::Reminder) };
+        Ok(cals.iter().map(|c| ReminderList::from_ek(&c)).collect())
     }
 
     /// Return the default list for new reminders, if one is configured.
@@ -270,17 +224,20 @@ impl ReminderStore {
                 .collect()
         });
 
+        let ns_cals = ek_cals.as_ref().map(|v| NSArray::from_retained_slice(v));
         let predicate = unsafe {
             if incomplete_only {
-                self.inner.0.predicateForIncompleteRemindersWithDueDateStarting_ending_calendars(
-                    None,
-                    None,
-                    ek_cals.as_deref().map(|v| NSArray::from_slice(v.as_slice())).as_deref(),
-                )
+                self.inner
+                    .0
+                    .predicateForIncompleteRemindersWithDueDateStarting_ending_calendars(
+                        None,
+                        None,
+                        ns_cals.as_deref(),
+                    )
             } else {
-                self.inner.0.predicateForRemindersInCalendars(
-                    ek_cals.as_deref().map(|v| NSArray::from_slice(v.as_slice())).as_deref(),
-                )
+                self.inner
+                    .0
+                    .predicateForRemindersInCalendars(ns_cals.as_deref())
             }
         };
 
@@ -293,7 +250,7 @@ impl ReminderStore {
                     Ok(vec![])
                 } else {
                     let arr = unsafe { &*reminders };
-                    Ok(unsafe { arr.iter().map(|r| Reminder::from_ek(r)).collect() })
+                    Ok(arr.iter().map(|r| Reminder::from_ek(&r)).collect())
                 };
                 let _ = tx.send(result);
             },
@@ -312,14 +269,6 @@ impl ReminderStore {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-fn nserror_message(err: *mut NSError) -> String {
-    if err.is_null() {
-        return "unknown error".to_owned();
-    }
-    unsafe {
-        (*err)
-            .localizedDescription()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "unknown error".to_owned())
-    }
+fn nserror_message(err: &NSError) -> String {
+    err.localizedDescription().to_string()
 }

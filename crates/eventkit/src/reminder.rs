@@ -24,19 +24,10 @@ pub struct Reminder {
 impl Reminder {
     /// Convert an `EKReminder` into a `Reminder`.
     pub(crate) fn from_ek(ek: &EKReminder) -> Self {
-        let identifier = unsafe {
-            ek.calendarItemIdentifier().map(|s| s.to_string())
-        };
-        let title = unsafe {
-            ek.title()
-                .map(|s| s.to_string())
-                .unwrap_or_default()
-        };
+        let identifier = Some(unsafe { ek.calendarItemIdentifier().to_string() });
+        let title = unsafe { ek.title().to_string() };
         let notes = unsafe { ek.notes().map(|s| s.to_string()) };
-        let list_identifier = unsafe {
-            ek.calendar()
-                .and_then(|c| Some(c.calendarIdentifier().to_string()))
-        };
+        let list_identifier = unsafe { ek.calendar().map(|c| c.calendarIdentifier().to_string()) };
         let is_completed = unsafe { ek.isCompleted() };
         let priority = unsafe { ek.priority() as u8 };
         let due_date = unsafe { ek.dueDateComponents() }.and_then(nsdate_components_to_utc);
@@ -56,10 +47,18 @@ impl Reminder {
 
     /// Build an `EKReminder` from this value for saving.
     ///
-    /// If `identifier` is `Some`, it is ignored — EventKit identifies saved
-    /// reminders by the object returned from `EKEventStore::save`.
+    /// If `identifier` is `Some`, the existing reminder with that identifier is
+    /// fetched and updated; if it is `None`, a new reminder is created.
     pub(crate) fn to_ek(&self, store: &EKEventStore) -> EventKitResult<Retained<EKReminder>> {
-        let ek = unsafe { EKReminder::reminderWithEventStore(store) };
+        let ek = match self.identifier {
+            Some(ref id) => {
+                let ns_id = NSString::from_str(id);
+                unsafe { store.calendarItemWithIdentifier(&ns_id) }
+                    .and_then(|item| item.downcast::<EKReminder>().ok())
+                    .ok_or_else(|| EventKitError::ReminderNotFound(id.clone()))?
+            }
+            None => unsafe { EKReminder::reminderWithEventStore(store) },
+        };
 
         unsafe {
             ek.setTitle(Some(&NSString::from_str(&self.title)));
@@ -68,9 +67,12 @@ impl Reminder {
             ek.setPriority(self.priority as _);
         }
 
-        if let Some(ref due) = self.due_date {
-            let components = utc_to_nsdate_components(due);
-            unsafe { ek.setDueDateComponents(Some(&components)) };
+        match self.due_date {
+            Some(ref due) => {
+                let components = utc_to_nsdate_components(due);
+                unsafe { ek.setDueDateComponents(Some(&components)) };
+            }
+            None => unsafe { ek.setDueDateComponents(None) },
         }
 
         Ok(ek)
@@ -83,7 +85,7 @@ impl Reminder {
 const APPLE_EPOCH_OFFSET: f64 = 978_307_200.0;
 
 fn nsdate_to_utc(date: Retained<objc2_foundation::NSDate>) -> Option<DateTime<Utc>> {
-    let secs_since_apple = unsafe { date.timeIntervalSinceReferenceDate() };
+    let secs_since_apple = date.timeIntervalSinceReferenceDate();
     let unix_secs = secs_since_apple + APPLE_EPOCH_OFFSET;
     let secs = unix_secs.trunc() as i64;
     let nanos = (unix_secs.fract().abs() * 1e9) as u32;
@@ -94,27 +96,23 @@ fn nsdate_components_to_utc(
     components: Retained<objc2_foundation::NSDateComponents>,
 ) -> Option<DateTime<Utc>> {
     // Use the Gregorian calendar to resolve partial components to an NSDate.
-    use objc2_foundation::{NSCalendar, NSCalendarIdentifier};
-    let cal = unsafe {
-        NSCalendar::calendarWithIdentifier(NSCalendarIdentifier::Gregorian)?
-    };
-    let date = unsafe { cal.dateFromComponents(&components)? };
+    use objc2_foundation::{NSCalendar, NSCalendarIdentifierGregorian};
+    let cal = NSCalendar::calendarWithIdentifier(unsafe { NSCalendarIdentifierGregorian })?;
+    let date = cal.dateFromComponents(&components)?;
     nsdate_to_utc(date)
 }
 
 fn utc_to_nsdate_components(dt: &DateTime<Utc>) -> Retained<objc2_foundation::NSDateComponents> {
-    use objc2_foundation::NSDateComponents;
     use chrono::Datelike;
     use chrono::Timelike;
+    use objc2_foundation::NSDateComponents;
 
-    let components = unsafe { NSDateComponents::new() };
-    unsafe {
-        components.setYear(dt.year() as _);
-        components.setMonth(dt.month() as _);
-        components.setDay(dt.day() as _);
-        components.setHour(dt.hour() as _);
-        components.setMinute(dt.minute() as _);
-        components.setSecond(dt.second() as _);
-    }
+    let components = NSDateComponents::new();
+    components.setYear(dt.year() as _);
+    components.setMonth(dt.month() as _);
+    components.setDay(dt.day() as _);
+    components.setHour(dt.hour() as _);
+    components.setMinute(dt.minute() as _);
+    components.setSecond(dt.second() as _);
     components
 }

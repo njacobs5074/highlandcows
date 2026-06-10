@@ -13,16 +13,9 @@ pub struct ReminderList {
 impl ReminderList {
     pub(crate) fn from_ek(cal: &EKCalendar) -> Self {
         let list_identifier = unsafe { cal.calendarIdentifier().to_string() };
-        let title = unsafe {
-            cal.title()
-                .map(|s| s.to_string())
-                .unwrap_or_default()
-        };
+        let title = unsafe { cal.title().to_string() };
         let allows_content_modifications = unsafe { cal.allowsContentModifications() };
-        let source_title = unsafe {
-            cal.source()
-                .and_then(|s| s.title().map(|t| t.to_string()))
-        };
+        let source_title = unsafe { cal.source().map(|s| s.title().to_string()) };
 
         ReminderList {
             list_identifier,
