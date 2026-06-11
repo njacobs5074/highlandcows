@@ -150,22 +150,42 @@ impl ReminderStore {
 
     /// Save a reminder. Returns the stable identifier assigned by EventKit.
     ///
-    /// If `reminder.identifier` is `None`, a new reminder is created.
-    /// If it is `Some`, EventKit updates the existing reminder with that identifier.
+    /// If `reminder.identifier` is `None`, a new reminder is created in the
+    /// list named by `reminder.list_identifier`, or in the system default
+    /// Reminders list if `list_identifier` is also `None`.
+    ///
+    /// If `reminder.identifier` is `Some`, the existing reminder with that
+    /// identifier is updated. When `list_identifier` is `None` on an update,
+    /// the reminder stays in its current list; supply a new `list_identifier`
+    /// to move it.
     pub fn save(
         &self,
         reminder: &Reminder,
         _token: &impl RemindersAccess,
     ) -> EventKitResult<String> {
+        use objc2_foundation::NSString;
+
         let ek = reminder.to_ek(&self.inner.0)?;
 
-        // If the reminder has a list_identifier, set its calendar.
-        if let Some(ref list_id) = reminder.list_identifier {
-            use objc2_foundation::NSString;
-            let ns_id = NSString::from_str(list_id);
-            let cal = unsafe { self.inner.0.calendarWithIdentifier(&ns_id) };
-            if let Some(cal) = cal {
+        match &reminder.list_identifier {
+            Some(list_id) => {
+                let ns_id = NSString::from_str(list_id);
+                let cal = unsafe { self.inner.0.calendarWithIdentifier(&ns_id) }
+                    .ok_or_else(|| EventKitError::ListNotFound(list_id.clone()))?;
                 unsafe { ek.setCalendar(Some(&cal)) };
+            }
+            None if reminder.identifier.is_none() => {
+                // New reminder with no list specified — use the system default.
+                let cal = unsafe { self.inner.0.defaultCalendarForNewReminders() }
+                    .ok_or_else(|| {
+                        EventKitError::Framework(
+                            "no default Reminders calendar configured".into(),
+                        )
+                    })?;
+                unsafe { ek.setCalendar(Some(&cal)) };
+            }
+            None => {
+                // Updating an existing reminder — leave its calendar unchanged.
             }
         }
 
