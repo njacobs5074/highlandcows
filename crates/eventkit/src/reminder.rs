@@ -95,9 +95,13 @@ fn nsdate_to_utc(date: Retained<objc2_foundation::NSDate>) -> Option<DateTime<Ut
 fn nsdate_components_to_utc(
     components: Retained<objc2_foundation::NSDateComponents>,
 ) -> Option<DateTime<Utc>> {
-    // Use the Gregorian calendar to resolve partial components to an NSDate.
-    use objc2_foundation::{NSCalendar, NSCalendarIdentifierGregorian};
+    use objc2_foundation::{NSCalendar, NSCalendarIdentifierGregorian, NSString, NSTimeZone};
+    // Pin the calendar to UTC so components written by utc_to_nsdate_components
+    // (which stores UTC field values with no timezone annotation) are interpreted
+    // correctly regardless of the system local timezone.
     let cal = NSCalendar::calendarWithIdentifier(unsafe { NSCalendarIdentifierGregorian })?;
+    let utc = NSTimeZone::timeZoneWithName(&NSString::from_str("UTC"))?;
+    cal.setTimeZone(&utc);
     let date = cal.dateFromComponents(&components)?;
     nsdate_to_utc(date)
 }

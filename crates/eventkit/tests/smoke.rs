@@ -165,10 +165,22 @@ fn test_with_access() {
 }
 
 #[test]
-#[ignore = "requires TCC Reminders authorization"]
+#[ignore = "requires TCC Reminders authorization; creates and deletes a real reminder"]
 fn test_fetch_all_vs_fetch_incomplete() {
     let store = ReminderStore::builder().connect().unwrap();
     let token = store.authorize().expect("authorization failed");
+
+    // Anchor the assertion on a reminder we control so the test doesn't
+    // depend on the state of pre-existing user data or concurrent test runs.
+    let id = store
+        .save(
+            &Reminder {
+                title: "eventkit-fetch-all-test".into(),
+                ..Default::default()
+            },
+            &token,
+        )
+        .expect("save failed");
 
     let all = store.fetch_all(None, &token).expect("fetch_all failed");
     let incomplete = store
@@ -176,18 +188,19 @@ fn test_fetch_all_vs_fetch_incomplete() {
         .expect("fetch_incomplete failed");
 
     assert!(
+        all.iter().any(|r| r.identifier.as_deref() == Some(id.as_str())),
+        "test reminder {id} missing from fetch_all"
+    );
+    assert!(
+        incomplete.iter().any(|r| r.identifier.as_deref() == Some(id.as_str())),
+        "test reminder {id} missing from fetch_incomplete"
+    );
+    assert!(
         all.len() >= incomplete.len(),
-        "fetch_all ({}) should return at least as many reminders as fetch_incomplete ({})",
+        "fetch_all ({}) should return at least as many as fetch_incomplete ({})",
         all.len(),
         incomplete.len()
     );
 
-    // Every incomplete reminder should appear in fetch_all.
-    for r in &incomplete {
-        assert!(
-            all.iter().any(|a| a.identifier == r.identifier),
-            "incomplete reminder {:?} missing from fetch_all",
-            r.identifier
-        );
-    }
+    store.remove(&id, &token).expect("cleanup remove failed");
 }
