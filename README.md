@@ -14,6 +14,7 @@ A Cargo workspace of Rust libraries published under the `highlandcows` umbrella 
 | Crate | Description |
 |-------|-------------|
 | [`highlandcows-isam`](crates/isam/) | Persistent ISAM key/value store backed by an on-disk B-tree |
+| [`highlandcows-eventkit`](crates/eventkit/) | macOS-only Rust wrapper for Apple's EventKit — CRUD access to the system Reminders database |
 
 ---
 
@@ -333,6 +334,93 @@ db.migrate_index(name, version, f, token) -> IsamResult<()>
 
 ---
 
+## highlandcows-eventkit
+
+> **macOS only.** The crate is compiled with `#![cfg(target_os = "macos")]` and produces no output on other platforms.
+
+A Rust wrapper around Apple's EventKit framework providing CRUD access to the system Reminders database.
+
+### Features
+
+- **Compile-time authorization enforcement** — every CRUD method requires a capability token (`FullAccessToken` or `WriteOnlyToken`) obtained by calling `authorize()`. Code that skips authorization does not compile.
+- **Blocking authorization** — bridges EventKit's async callback over `std::sync::mpsc`; the calling thread blocks until the system permission dialog is dismissed (or permission was already decided).
+- **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `remove`
+- **Reminder list access** — `lists`, `default_list`
+- **Cloneable handle** — `ReminderStore` is `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
+- **`with_access` closure helper** — mirrors `Isam::read` / `Isam::write` for ergonomic one-shot access
+
+### Quick start
+
+```rust
+use highlandcows_eventkit::{EventKitResult, ReminderStore};
+
+fn main() -> EventKitResult<()> {
+    let store = ReminderStore::builder().connect()?;
+
+    // Blocks until the user answers the system permission dialog (returns
+    // immediately if access was already granted or denied).
+    let token = store.authorize()?;
+
+    for reminder in store.fetch_incomplete(None, &token)? {
+        println!("{} (due {:?})", reminder.title, reminder.due_date);
+    }
+    Ok(())
+}
+```
+
+Or use `with_access` to bundle authorization and access in one call:
+
+```rust
+let store = ReminderStore::builder().connect()?;
+let lists = store.with_access(|token, store| store.lists(token))?;
+```
+
+### Authorization and capability tokens
+
+EventKit requires user consent before Reminders data can be read or written. This crate enforces that requirement at compile time: every CRUD method takes a token — `FullAccessToken` from `authorize()` or `WriteOnlyToken` from `authorize_write_only()` — that can only be constructed inside the crate itself.
+
+`WriteOnlyToken` grants write access; `FullAccessToken` grants both read and write. The sealed trait hierarchy (`RemindersAccess`, `FullAccess`) allows methods that need write access to accept either token, while fetch methods require `FullAccessToken`.
+
+Note: EventKit does not distinguish write-only from full access for Reminders (that distinction applies only to Calendar events). `authorize_write_only()` delegates to full access internally.
+
+### App requirements
+
+The host application's `Info.plist` must declare `NSRemindersFullAccessUsageDescription`, or macOS will deny access without showing a permission dialog. Plain command-line binaries inherit the TCC identity of the terminal that launches them, so during development the permission prompt names your terminal app (Terminal, iTerm2, etc.).
+
+### API
+
+| Method | Description |
+|--------|-------------|
+| `ReminderStore::builder()` | Create a `ReminderStoreBuilder` |
+| `ReminderStoreBuilder::connect()` | Connect to the system Reminders database |
+| `ReminderStore::authorization_status()` | Query current authorization without prompting |
+| `ReminderStore::authorize()` | Request full access (blocking) — returns `FullAccessToken` |
+| `ReminderStore::authorize_write_only()` | Request write-only access — returns `WriteOnlyToken` |
+| `ReminderStore::with_access(f)` | Authorize then run a closure with the token |
+| `ReminderStore::fetch(id, &token)` | Fetch one reminder by stable ID |
+| `ReminderStore::fetch_all(lists, &token)` | Fetch all reminders, optionally filtered to specific lists |
+| `ReminderStore::fetch_incomplete(lists, &token)` | Fetch only incomplete (not-yet-done) reminders |
+| `ReminderStore::save(&reminder, &token)` | Create or update a reminder; returns the stable ID |
+| `ReminderStore::remove(id, &token)` | Delete a reminder by stable ID |
+| `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
+| `ReminderStore::default_list(&token)` | Return the default list for new reminders |
+
+### Error types
+
+| Variant | When |
+|---------|------|
+| `EventKitError::AuthorizationDenied` | The user denied access (or `NSRemindersFullAccessUsageDescription` is missing) |
+| `EventKitError::AuthorizationRestricted` | System policy prevents access (parental controls, MDM) |
+| `EventKitError::AuthorizationNotDetermined` | `authorize()` was not called before a CRUD method |
+| `EventKitError::ReminderNotFound(id)` | `fetch`, `remove`, or `save` (update path) received an unknown ID |
+| `EventKitError::ListNotFound(id)` | A list identifier resolved to no calendar |
+| `EventKitError::SaveFailed(msg)` | EventKit rejected the save; message from `NSError.localizedDescription` |
+| `EventKitError::RemoveFailed(msg)` | EventKit rejected the remove |
+| `EventKitError::Framework(msg)` | Internal framework error (e.g., callback channel dropped) |
+| `EventKitError::LockPoisoned` | A thread panicked while holding the store lock |
+
+---
+
 ## Building
 
 Requires Rust 1.70 or later. Install via [rustup](https://rustup.rs) if needed.
@@ -359,7 +447,11 @@ highlandcows/
 │   ├── highlandcows/           # umbrella facade crate
 │   │   ├── Cargo.toml
 │   │   └── src/lib.rs
-│   └── isam/                   # highlandcows-isam implementation
+│   ├── isam/                   # highlandcows-isam implementation
+│   │   ├── Cargo.toml
+│   │   ├── src/
+│   │   └── tests/
+│   └── eventkit/               # highlandcows-eventkit (macOS only)
 │       ├── Cargo.toml
 │       ├── src/
 │       └── tests/
@@ -371,10 +463,23 @@ highlandcows/
 
 ## Dependencies
 
+**highlandcows-isam:**
+
 | Crate | Purpose |
 |-------|---------|
 | [`serde`](https://crates.io/crates/serde) | Serialization framework |
 | [`bincode`](https://crates.io/crates/bincode) 1.x | Compact binary encoding |
+| [`thiserror`](https://crates.io/crates/thiserror) | Ergonomic error type derivation |
+
+**highlandcows-eventkit (macOS only):**
+
+| Crate | Purpose |
+|-------|---------|
+| [`objc2`](https://crates.io/crates/objc2) | Rust bindings to the Objective-C runtime |
+| [`objc2-event-kit`](https://crates.io/crates/objc2-event-kit) | Generated bindings for Apple's EventKit framework |
+| [`objc2-foundation`](https://crates.io/crates/objc2-foundation) | Generated bindings for the Foundation framework |
+| [`block2`](https://crates.io/crates/block2) | Rust bindings to Objective-C blocks |
+| [`chrono`](https://crates.io/crates/chrono) | Date and time handling (NSDate ↔ DateTime<Utc> conversion) |
 | [`thiserror`](https://crates.io/crates/thiserror) | Ergonomic error type derivation |
 
 ---
