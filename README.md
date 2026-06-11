@@ -2,6 +2,7 @@
 
 ![Build & Tests (x86-64)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-x86.yml/badge.svg?branch=main)
 ![Build & Tests (ARM64)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-arm.yml/badge.svg?branch=main)
+![Build & Tests (macOS)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-macos.yml/badge.svg?branch=main)
 
 A Cargo workspace of Rust libraries published under the `highlandcows` umbrella crate.
 
