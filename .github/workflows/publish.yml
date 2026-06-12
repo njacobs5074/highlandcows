@@ -53,7 +53,10 @@ jobs:
           echo "All versions consistent — proceeding to publish."
 
       - name: Publish highlandcows-isam
-        run: cargo publish -p highlandcows-isam
+        run: |
+          out=$(cargo publish -p highlandcows-isam 2>&1); rc=$?
+          echo "$out"
+          [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -62,7 +65,10 @@ jobs:
         run: sleep 30
 
       - name: Publish highlandcows-eventkit
-        run: cargo publish -p highlandcows-eventkit
+        run: |
+          out=$(cargo publish -p highlandcows-eventkit 2>&1); rc=$?
+          echo "$out"
+          [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -70,6 +76,9 @@ jobs:
         run: sleep 30
 
       - name: Publish highlandcows
-        run: cargo publish -p highlandcows
+        run: |
+          out=$(cargo publish -p highlandcows 2>&1); rc=$?
+          echo "$out"
+          [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
