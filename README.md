@@ -406,6 +406,22 @@ The host application's `Info.plist` must declare `NSRemindersFullAccessUsageDesc
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
 
+### Testing
+
+Most tests run automatically with `cargo test -p highlandcows-eventkit`. Tests that
+interact with the live Reminders database require TCC authorization and are marked
+`#[ignore]` so they are skipped by default. To run them locally:
+
+1. Grant **Reminders** access to your terminal in **System Settings → Privacy & Security → Reminders**.
+2. Run:
+
+```sh
+cargo test -p highlandcows-eventkit -- --ignored
+```
+
+These tests create and delete real reminders in your Reminders database. They are
+not run in CI.
+
 ### Error types
 
 | Variant | When |
