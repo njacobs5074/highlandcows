@@ -1,6 +1,6 @@
 [package]
 name          = "highlandcows"
-version = "0.3.1"
+version = "0.4.0"
 edition       = "2021"
 description   = "Umbrella crate re-exporting the highlandcows library suite"
 license       = "MIT"
@@ -12,7 +12,7 @@ keywords      = ["isam", "database", "storage", "btree", "persistence"]
 categories    = ["database-implementations", "data-structures"]
 
 [dependencies]
-highlandcows-isam = { path = "../isam", version = "0.3.1" }
+highlandcows-isam = { path = "../isam", version = "0.4.0" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-highlandcows-eventkit = { path = "../eventkit", version = "0.1.0" }
+highlandcows-eventkit = { path = "../eventkit", version = "0.4.0" }

@@ -17,6 +17,9 @@ sed -i '' \
 sed -i '' \
   "s/highlandcows-isam = { path = \"\.\.\/isam\", version = \"[0-9]*\.[0-9]*\.[0-9]*\" }/highlandcows-isam = { path = \"..\/isam\", version = \"$NEW_VERSION\" }/" \
   crates/highlandcows/Cargo.toml
+sed -i '' \
+  "s/highlandcows-eventkit = { path = \"\.\.\/eventkit\", version = \"[0-9]*\.[0-9]*\.[0-9]*\" }/highlandcows-eventkit = { path = \"..\/eventkit\", version = \"$NEW_VERSION\" }/" \
+  crates/highlandcows/Cargo.toml
 
 sed -i '' \
   "s/^version *= *\"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$NEW_VERSION\"/" \
