@@ -25,20 +25,26 @@ jobs:
 
           ISAM_VER=$(grep '^version' crates/isam/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           HC_VER=$(grep '^version' crates/highlandcows/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          EK_VER=$(grep '^version' crates/eventkit/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           README_HC=$(grep '^highlandcows = ' README.md | sed 's/highlandcows = "\(.*\)"/\1/')
           README_ISAM=$(grep '^highlandcows-isam = ' README.md | sed 's/highlandcows-isam = "\(.*\)"/\1/')
+          README_EK=$(grep '^highlandcows-eventkit = ' README.md | sed 's/highlandcows-eventkit = "\(.*\)"/\1/')
 
-          echo "Tag:                      $EXPECTED"
-          echo "isam/Cargo.toml:          $ISAM_VER"
-          echo "highlandcows/Cargo.toml:  $HC_VER"
-          echo "README highlandcows:      $README_HC"
-          echo "README highlandcows-isam: $README_ISAM"
+          echo "Tag:                           $EXPECTED"
+          echo "isam/Cargo.toml:               $ISAM_VER"
+          echo "highlandcows/Cargo.toml:       $HC_VER"
+          echo "eventkit/Cargo.toml:           $EK_VER"
+          echo "README highlandcows:           $README_HC"
+          echo "README highlandcows-isam:      $README_ISAM"
+          echo "README highlandcows-eventkit:  $README_EK"
 
           FAILED=0
           [ "$ISAM_VER"    = "$EXPECTED" ] || { echo "MISMATCH: crates/isam/Cargo.toml"; FAILED=1; }
           [ "$HC_VER"      = "$EXPECTED" ] || { echo "MISMATCH: crates/highlandcows/Cargo.toml"; FAILED=1; }
+          [ "$EK_VER"      = "$EXPECTED" ] || { echo "MISMATCH: crates/eventkit/Cargo.toml"; FAILED=1; }
           [ "$README_HC"   = "$EXPECTED" ] || { echo "MISMATCH: README.md (highlandcows)"; FAILED=1; }
           [ "$README_ISAM" = "$EXPECTED" ] || { echo "MISMATCH: README.md (highlandcows-isam)"; FAILED=1; }
+          [ "$README_EK"   = "$EXPECTED" ] || { echo "MISMATCH: README.md (highlandcows-eventkit)"; FAILED=1; }
 
           if [ "$FAILED" -eq 1 ]; then
             echo "Run './scripts/release.sh $EXPECTED' locally, commit, and re-push the tag."
@@ -51,8 +57,16 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      # Give crates.io time to index the dependency before publishing the facade.
+      # Give crates.io time to index the dependency before publishing the next crate.
       - name: Wait for crates.io to index highlandcows-isam
+        run: sleep 30
+
+      - name: Publish highlandcows-eventkit
+        run: cargo publish -p highlandcows-eventkit
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io to index highlandcows-eventkit
         run: sleep 30
 
       - name: Publish highlandcows
