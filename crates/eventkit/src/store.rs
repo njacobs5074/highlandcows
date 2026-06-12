@@ -195,6 +195,19 @@ impl ReminderStore {
         }
     }
 
+    /// Mark a reminder as completed.
+    ///
+    /// Fetches the reminder by `id`, sets `is_completed = true`, and saves it
+    /// back. Returns an error if the reminder does not exist.
+    pub fn complete(&self, id: &str, token: &FullAccessToken) -> EventKitResult<()> {
+        let mut reminder = self
+            .fetch(id, token)?
+            .ok_or_else(|| EventKitError::ReminderNotFound(id.to_owned()))?;
+        reminder.is_completed = true;
+        self.save(&reminder, token)?;
+        Ok(())
+    }
+
     /// Remove a reminder by its identifier.
     pub fn remove(&self, id: &str, _token: &FullAccessToken) -> EventKitResult<()> {
         use objc2_foundation::NSString;
