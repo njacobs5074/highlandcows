@@ -19,16 +19,23 @@ sed -i '' \
   crates/highlandcows/Cargo.toml
 
 sed -i '' \
+  "s/^version *= *\"[0-9]*\.[0-9]*\.[0-9]*\"/version = \"$NEW_VERSION\"/" \
+  crates/eventkit/Cargo.toml
+
+sed -i '' \
   "s/^highlandcows = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows = \"$NEW_VERSION\"/" \
   README.md
 sed -i '' \
   "s/^highlandcows-isam = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows-isam = \"$NEW_VERSION\"/" \
   README.md
+sed -i '' \
+  "s/^highlandcows-eventkit = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows-eventkit = \"$NEW_VERSION\"/" \
+  README.md
 
 echo "Running cargo check..."
 cargo check --workspace
 
-git add crates/isam/Cargo.toml crates/highlandcows/Cargo.toml Cargo.lock README.md
+git add crates/isam/Cargo.toml crates/highlandcows/Cargo.toml crates/eventkit/Cargo.toml Cargo.lock README.md
 git commit -m "chore: bump versions to $NEW_VERSION"
 git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
 
@@ -36,3 +43,6 @@ echo ""
 echo "Done. Now run:"
 echo "  git push && git push origin v$NEW_VERSION"
 echo "  gh release create v$NEW_VERSION --repo njacobs5074/highlandcows --title \"v$NEW_VERSION\" --notes \"\"  # add release notes"
+echo "  cargo publish -p highlandcows-isam"
+echo "  cargo publish -p highlandcows"
+echo "  cargo publish -p highlandcows-eventkit"

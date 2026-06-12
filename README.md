@@ -350,6 +350,13 @@ A Rust wrapper around Apple's EventKit framework providing CRUD access to the sy
 - **Cloneable handle** — `ReminderStore` is `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
 - **`with_access` closure helper** — mirrors `Isam::read` / `Isam::write` for ergonomic one-shot access
 
+### Installation
+
+```toml
+[dependencies]
+highlandcows-eventkit = "0.1.0"
+```
+
 ### Quick start
 
 ```rust
