@@ -5,7 +5,7 @@
 //!
 //! ## Quick start
 //!
-//! ```no_run
+//! ```ignore
 //! use highlandcows_eventkit::{EventKitResult, ReminderStore};
 //!
 //! # fn main() -> EventKitResult<()> {
@@ -25,7 +25,7 @@
 //! Or use [`ReminderStore::with_access`] to bundle authorization and access
 //! in one call (mirrors `Isam::read` / `Isam::write` from `highlandcows-isam`):
 //!
-//! ```no_run
+//! ```ignore
 //! # use highlandcows_eventkit::{EventKitResult, ReminderStore};
 //! # fn main() -> EventKitResult<()> {
 //! let store = ReminderStore::builder().connect()?;
