@@ -54,7 +54,7 @@ jobs:
 
       - name: Publish highlandcows-isam
         run: |
-          out=$(cargo publish -p highlandcows-isam 2>&1); rc=$?
+          set +e; out=$(cargo publish -p highlandcows-isam 2>&1); rc=$?; set -e
           echo "$out"
           [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
@@ -66,7 +66,7 @@ jobs:
 
       - name: Publish highlandcows-eventkit
         run: |
-          out=$(cargo publish -p highlandcows-eventkit 2>&1); rc=$?
+          set +e; out=$(cargo publish -p highlandcows-eventkit 2>&1); rc=$?; set -e
           echo "$out"
           [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
@@ -77,7 +77,7 @@ jobs:
 
       - name: Publish highlandcows
         run: |
-          out=$(cargo publish -p highlandcows 2>&1); rc=$?
+          set +e; out=$(cargo publish -p highlandcows 2>&1); rc=$?; set -e
           echo "$out"
           [ $rc -eq 0 ] || echo "$out" | grep -q "already exists" || exit $rc
         env:
