@@ -1,12 +1,12 @@
 [package]
 name        = "highlandcows-eventkit"
-version = "0.4.0"
+version = "0.5.0"
 edition     = "2021"
-description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Reminders"
+description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Reminders and Calendar"
 license     = "MIT"
 repository  = "https://github.com/njacobs5074/highlandcows"
 homepage    = "https://github.com/njacobs5074/highlandcows"
-keywords    = ["eventkit", "reminders", "macos", "apple"]
+keywords    = ["eventkit", "reminders", "calendar", "macos", "apple"]
 categories  = ["os::macos-apis"]
 
 [lib]
@@ -16,6 +16,7 @@ name = "highlandcows_eventkit"
 objc2            = "0.6.4"
 objc2-event-kit  = { version = "0.3.2", features = [
     "EKEventStore",
+    "EKEvent",
     "EKReminder",
     "EKCalendar",
     "EKCalendarItem",
