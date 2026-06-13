@@ -200,6 +200,89 @@ fn test_calendar_with_access() {
 }
 
 #[test]
+#[ignore = "requires TCC Calendar authorization; creates and deletes a real event"]
+fn test_calendar_save_and_remove() {
+    use highlandcows_eventkit::CalendarEvent;
+
+    let store = CalendarStore::builder().connect().unwrap();
+    let token = store.authorize().expect("calendar authorization failed");
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let start: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 3600, 0).unwrap();
+    let end: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 7200, 0).unwrap();
+
+    let new = CalendarEvent {
+        title: format!("eventkit-test-{ts}"),
+        start_date: Some(start),
+        end_date: Some(end),
+        ..Default::default()
+    };
+    let id = store.save(&new, &token).expect("save failed");
+    assert!(!id.is_empty(), "expected a non-empty identifier from save");
+
+    let fetched = store
+        .fetch(&id, &token)
+        .expect("fetch failed")
+        .expect("event not found after save");
+    assert_eq!(fetched.title, new.title);
+
+    store.remove(&id, &token).expect("remove failed");
+
+    let gone = store.fetch(&id, &token).expect("fetch after remove failed");
+    assert!(gone.is_none(), "event should be absent after remove");
+}
+
+#[test]
+#[ignore = "requires TCC Calendar authorization; creates and deletes a real event"]
+fn test_calendar_update_round_trip() {
+    use highlandcows_eventkit::CalendarEvent;
+
+    let store = CalendarStore::builder().connect().unwrap();
+    let token = store.authorize().expect("calendar authorization failed");
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let start: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 3600, 0).unwrap();
+    let end: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 7200, 0).unwrap();
+
+    let id = store
+        .save(
+            &CalendarEvent {
+                title: format!("eventkit-update-test-{ts}"),
+                start_date: Some(start),
+                end_date: Some(end),
+                ..Default::default()
+            },
+            &token,
+        )
+        .expect("initial save failed");
+
+    let mut fetched = store
+        .fetch(&id, &token)
+        .expect("fetch failed")
+        .expect("event not found after create");
+    fetched.title = format!("eventkit-update-test-{ts}-updated");
+    let id2 = store.save(&fetched, &token).expect("update save failed");
+
+    assert_eq!(id, id2, "save should return the same identifier on update");
+
+    let updated = store
+        .fetch(&id, &token)
+        .expect("fetch after update failed")
+        .expect("event not found after update");
+    assert_eq!(updated.title, fetched.title);
+
+    store.remove(&id, &token).expect("cleanup remove failed");
+}
+
+#[test]
 #[ignore = "requires TCC Calendar authorization"]
 fn test_calendar_default_calendar() {
     let store = CalendarStore::builder().connect().unwrap();

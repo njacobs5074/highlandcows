@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use objc2::runtime::Bool;
-use objc2_event_kit::{EKEntityType, EKEvent, EKEventStore};
+use objc2_event_kit::{EKEntityType, EKEvent, EKEventStore, EKSpan};
 use objc2_foundation::NSError;
 
 use crate::auth::{CalendarAccess, CalendarFullAccessToken, CalendarWriteOnlyToken};
@@ -193,6 +193,78 @@ impl CalendarStore {
         Ok(events.iter().map(|e| CalendarEvent::from_ek(&e)).collect())
     }
 
+    // ── Event CRUD ────────────────────────────────────────────────────────────
+
+    /// Save an event. Returns the stable identifier assigned by EventKit.
+    ///
+    /// If `event.identifier` is `None`, a new event is created in the calendar
+    /// named by `event.calendar_identifier`, or the system default calendar if
+    /// `calendar_identifier` is also `None`.
+    ///
+    /// If `event.identifier` is `Some`, the existing event is updated. Supply a
+    /// new `calendar_identifier` to move the event to a different calendar;
+    /// omit it to leave it in its current calendar.
+    ///
+    /// `event.start_date` and `event.end_date` are required and must both be `Some`.
+    ///
+    /// Only the specific occurrence is affected (`EKSpan::ThisEvent`).
+    pub fn save(
+        &self,
+        event: &CalendarEvent,
+        _token: &impl CalendarAccess,
+    ) -> EventKitResult<String> {
+        use objc2_foundation::NSString;
+
+        let ek = event.to_ek(&self.inner.0)?;
+
+        match &event.calendar_identifier {
+            Some(cal_id) => {
+                let ns_id = NSString::from_str(cal_id);
+                let cal = unsafe { self.inner.0.calendarWithIdentifier(&ns_id) }
+                    .ok_or_else(|| EventKitError::CalendarNotFound(cal_id.clone()))?;
+                unsafe { ek.setCalendar(Some(&cal)) };
+            }
+            None if event.identifier.is_none() => {
+                let cal = unsafe { self.inner.0.defaultCalendarForNewEvents() }
+                    .ok_or_else(|| {
+                        EventKitError::Framework("no default Calendar configured".into())
+                    })?;
+                unsafe { ek.setCalendar(Some(&cal)) };
+            }
+            None => {
+                // Updating an existing event — leave its calendar unchanged.
+            }
+        }
+
+        match unsafe {
+            self.inner
+                .0
+                .saveEvent_span_commit_error(&ek, EKSpan::ThisEvent, true)
+        } {
+            Ok(()) => Ok(unsafe { ek.calendarItemIdentifier().to_string() }),
+            Err(err) => Err(EventKitError::SaveFailed(nserror_message(&err))),
+        }
+    }
+
+    /// Remove an event by its identifier.
+    ///
+    /// Only the specific occurrence is removed (`EKSpan::ThisEvent`).
+    pub fn remove(&self, id: &str, _token: &impl CalendarAccess) -> EventKitResult<()> {
+        use objc2_foundation::NSString;
+
+        let ns_id = NSString::from_str(id);
+        let ek = unsafe { self.inner.0.calendarItemWithIdentifier(&ns_id) }
+            .and_then(|item| item.downcast::<EKEvent>().ok())
+            .ok_or_else(|| EventKitError::EventNotFound(id.to_owned()))?;
+
+        unsafe {
+            self.inner
+                .0
+                .removeEvent_span_commit_error(&ek, EKSpan::ThisEvent, true)
+        }
+        .map_err(|err| EventKitError::RemoveFailed(nserror_message(&err)))
+    }
+
     // ── Calendars ─────────────────────────────────────────────────────────────
 
     /// Return all Calendar entries visible to this store.
@@ -209,5 +281,11 @@ impl CalendarStore {
         let cal = unsafe { self.inner.0.defaultCalendarForNewEvents() };
         Ok(cal.map(|c| Calendar::from_ek(&c)))
     }
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
+fn nserror_message(err: &NSError) -> String {
+    err.localizedDescription().to_string()
 }
 

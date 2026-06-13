@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
-use objc2_event_kit::EKEvent;
+use objc2::rc::Retained;
+use objc2_event_kit::{EKEvent, EKEventStore};
+use objc2_foundation::NSString;
 
-use crate::date_util::nsdate_to_utc;
+use crate::date_util::{nsdate_to_utc, utc_to_nsdate};
+use crate::error::{EventKitError, EventKitResult};
 
 /// A Calendar event, free of Objective-C pointers and safely `Send + Sync`.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -19,6 +22,41 @@ pub struct CalendarEvent {
 }
 
 impl CalendarEvent {
+    /// Build an `EKEvent` from this value for saving.
+    ///
+    /// If `identifier` is `Some`, the existing event with that identifier is
+    /// fetched and updated; if it is `None`, a new event is created.
+    /// `start_date` and `end_date` must both be `Some`.
+    pub(crate) fn to_ek(&self, store: &EKEventStore) -> EventKitResult<Retained<EKEvent>> {
+        let ek = match self.identifier {
+            Some(ref id) => {
+                let ns_id = NSString::from_str(id);
+                unsafe { store.calendarItemWithIdentifier(&ns_id) }
+                    .and_then(|item| item.downcast::<EKEvent>().ok())
+                    .ok_or_else(|| EventKitError::EventNotFound(id.clone()))?
+            }
+            None => unsafe { EKEvent::eventWithEventStore(store) },
+        };
+
+        let start = self.start_date.ok_or_else(|| {
+            EventKitError::Framework("CalendarEvent.start_date is required".into())
+        })?;
+        let end = self.end_date.ok_or_else(|| {
+            EventKitError::Framework("CalendarEvent.end_date is required".into())
+        })?;
+
+        unsafe {
+            ek.setTitle(Some(&NSString::from_str(&self.title)));
+            ek.setNotes(self.notes.as_deref().map(NSString::from_str).as_deref());
+            ek.setStartDate(Some(&utc_to_nsdate(&start)));
+            ek.setEndDate(Some(&utc_to_nsdate(&end)));
+            ek.setAllDay(self.is_all_day);
+            ek.setLocation(self.location.as_deref().map(NSString::from_str).as_deref());
+        }
+
+        Ok(ek)
+    }
+
     pub(crate) fn from_ek(ek: &EKEvent) -> Self {
         let identifier = Some(unsafe { ek.calendarItemIdentifier().to_string() });
         let title = unsafe { ek.title().to_string() };
