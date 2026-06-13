@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use highlandcows_eventkit::{EkAuthStatus, EkEntityType, EventKitError, Reminder};
+use highlandcows_eventkit::{CalendarEvent, EkAuthStatus, EkEntityType, EventKitError, Reminder};
 
 #[test]
 fn test_reminder_default() {
@@ -59,6 +59,14 @@ fn test_eventkit_error_display() {
         "reminder not found: abc-123"
     );
     assert_eq!(
+        EventKitError::EventNotFound("xyz-456".into()).to_string(),
+        "event not found: xyz-456"
+    );
+    assert_eq!(
+        EventKitError::CalendarNotFound("cal-789".into()).to_string(),
+        "calendar not found: cal-789"
+    );
+    assert_eq!(
         EventKitError::SaveFailed("disk full".into()).to_string(),
         "save failed: disk full"
     );
@@ -66,4 +74,28 @@ fn test_eventkit_error_display() {
         EventKitError::RemoveFailed("not found".into()).to_string(),
         "remove failed: not found"
     );
+}
+
+#[test]
+fn test_calendar_event_default() {
+    let e = CalendarEvent::default();
+    assert!(e.identifier.is_none());
+    assert_eq!(e.title, "");
+    assert!(e.notes.is_none());
+    assert!(e.calendar_identifier.is_none());
+    assert!(e.start_date.is_none());
+    assert!(e.end_date.is_none());
+    assert!(!e.is_all_day);
+    assert!(e.location.is_none());
+}
+
+#[test]
+fn test_calendar_event_clone_eq() {
+    let e = CalendarEvent {
+        title: "Team sync".into(),
+        is_all_day: false,
+        location: Some("Conf room A".into()),
+        ..Default::default()
+    };
+    assert_eq!(e.clone(), e);
 }
