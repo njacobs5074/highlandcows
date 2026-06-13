@@ -15,7 +15,7 @@ A Cargo workspace of Rust libraries published under the `highlandcows` umbrella 
 | Crate | Description |
 |-------|-------------|
 | [`highlandcows-isam`](crates/isam/) | Persistent ISAM key/value store backed by an on-disk B-tree |
-| [`highlandcows-eventkit`](crates/eventkit/) | macOS-only Rust wrapper for Apple's EventKit — CRUD access to the system Reminders database |
+| [`highlandcows-eventkit`](crates/eventkit/) | macOS-only Rust wrapper for Apple's EventKit — full CRUD for Reminders and Calendar events |
 
 ---
 
@@ -339,16 +339,18 @@ db.migrate_index(name, version, f, token) -> IsamResult<()>
 
 > **macOS only.** The crate is compiled with `#![cfg(target_os = "macos")]` and produces no output on other platforms.
 
-A Rust wrapper around Apple's EventKit framework providing CRUD access to the system Reminders database.
+A Rust wrapper around Apple's EventKit framework providing full CRUD access to both the system Reminders and Calendar databases.
 
 ### Features
 
-- **Compile-time authorization enforcement** — every CRUD method requires a capability token (`FullAccessToken` or `WriteOnlyToken`) obtained by calling `authorize()`. Code that skips authorization does not compile.
-- **Blocking authorization** — bridges EventKit's async callback over `std::sync::mpsc`; the calling thread blocks until the system permission dialog is dismissed (or permission was already decided).
+- **Two domains, one framework** — `ReminderStore` for tasks, `CalendarStore` for calendar events; both share one underlying `EKEventStore`
+- **Compile-time authorization enforcement** — every CRUD method requires a capability token obtained from `authorize()`. Code that skips authorization does not compile
+- **Blocking authorization** — bridges EventKit's async callback over `std::sync::mpsc`; the calling thread blocks until the system permission dialog is dismissed (or permission was already decided)
 - **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `remove`
-- **Reminder list access** — `lists`, `default_list`
-- **Cloneable handle** — `ReminderStore` is `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
-- **`with_access` closure helper** — mirrors `Isam::read` / `Isam::write` for ergonomic one-shot access
+- **Full Calendar CRUD** — `fetch`, `fetch_in_range`, `save`, `remove`; `fetch_in_range` is synchronous (no callback bridge needed)
+- **List/calendar enumeration** — `lists`, `default_list` (Reminders); `lists`, `default_calendar` (Calendar)
+- **Cloneable handles** — `ReminderStore` and `CalendarStore` are `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
+- **`with_access` closure helper** — bundles authorization and access in one call, mirroring `Isam::read` / `Isam::write`
 
 ### Installation
 
@@ -357,7 +359,7 @@ A Rust wrapper around Apple's EventKit framework providing CRUD access to the sy
 highlandcows-eventkit = "0.4.0"
 ```
 
-### Quick start
+### Quick start — Reminders
 
 ```rust
 use highlandcows_eventkit::{EventKitResult, ReminderStore};
@@ -376,26 +378,64 @@ fn main() -> EventKitResult<()> {
 }
 ```
 
-Or use `with_access` to bundle authorization and access in one call:
+### Quick start — Calendar
 
 ```rust
-let store = ReminderStore::builder().connect()?;
-let lists = store.with_access(|token, store| store.lists(token))?;
+use std::time::{SystemTime, UNIX_EPOCH};
+use chrono::{DateTime, Duration, Utc};
+use highlandcows_eventkit::{CalendarStore, EventKitResult};
+
+fn main() -> EventKitResult<()> {
+    let store = CalendarStore::builder().connect()?;
+    let token = store.authorize()?;
+
+    // chrono is built without the `clock` feature; use SystemTime for the current time.
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let end: DateTime<Utc> = DateTime::from_timestamp(now_secs, 0).unwrap();
+    let start = end - Duration::days(7);
+
+    for event in store.fetch_in_range(start, end, None, &token)? {
+        println!("{} ({:?} – {:?})", event.title, event.start_date, event.end_date);
+    }
+    Ok(())
+}
+```
+
+Or use `with_access` to bundle authorization and access in one call (works for both stores):
+
+```rust
+let store = CalendarStore::builder().connect()?;
+let calendars = store.with_access(|token, store| store.lists(token))?;
 ```
 
 ### Authorization and capability tokens
 
-EventKit requires user consent before Reminders data can be read or written. This crate enforces that requirement at compile time: every CRUD method takes a token — `FullAccessToken` from `authorize()` or `WriteOnlyToken` from `authorize_write_only()` — that can only be constructed inside the crate itself.
+EventKit requires user consent before data can be read or written. This crate enforces that at compile time: every CRUD method takes a token that can only be obtained from an `authorize` method.
 
-`WriteOnlyToken` grants write access; `FullAccessToken` grants both read and write. The sealed trait hierarchy (`RemindersAccess`, `FullAccess`) allows methods that need write access to accept either token, while fetch methods require `FullAccessToken`.
+| Token | Grants | Obtained from |
+|-------|--------|---------------|
+| `FullAccessToken` | Reminders read + write | `ReminderStore::authorize()` |
+| `WriteOnlyToken` | Reminders write only | `ReminderStore::authorize_write_only()` |
+| `CalendarFullAccessToken` | Calendar read + write | `CalendarStore::authorize()` |
+| `CalendarWriteOnlyToken` | Calendar write only | `CalendarStore::authorize_write_only()` |
 
-Note: EventKit does not distinguish write-only from full access for Reminders (that distinction applies only to Calendar events). `authorize_write_only()` delegates to full access internally.
+The sealed trait hierarchy (`RemindersAccess` / `FullAccess` for Reminders; `CalendarAccess` / `CalendarFullAccess` for Calendar) lets write methods accept either token while fetch methods require the full-access variant.
+
+Unlike Reminders, Calendar events have a genuine write-only authorization mode in EventKit: `CalendarWriteOnlyToken` permits creating and modifying events without granting read access. For Reminders, `authorize_write_only()` delegates to full access internally (EventKit does not distinguish the two for Reminders).
 
 ### App requirements
 
-The host application's `Info.plist` must declare `NSRemindersFullAccessUsageDescription`, or macOS will deny access without showing a permission dialog. Plain command-line binaries inherit the TCC identity of the terminal that launches them, so during development the permission prompt names your terminal app (Terminal, iTerm2, etc.).
+The host application's `Info.plist` must declare the appropriate usage description key, or macOS will deny access without showing a permission dialog:
 
-### API
+| Domain | Info.plist key |
+|--------|----------------|
+| Reminders (full) | `NSRemindersFullAccessUsageDescription` |
+| Calendar (full) | `NSCalendarsFullAccessUsageDescription` |
+| Calendar (write-only) | `NSCalendarsWriteOnlyAccessUsageDescription` |
+
+Plain command-line binaries inherit the TCC identity of the terminal that launches them, so during development the permission prompt names your terminal app (Terminal, iTerm2, etc.).
+
+### API — Reminders
 
 | Method | Description |
 |--------|-------------|
@@ -413,31 +453,47 @@ The host application's `Info.plist` must declare `NSRemindersFullAccessUsageDesc
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
 
+### API — Calendar
+
+| Method | Description |
+|--------|-------------|
+| `CalendarStore::builder()` | Create a `CalendarStoreBuilder` |
+| `CalendarStoreBuilder::connect()` | Connect to the system Calendar database |
+| `CalendarStore::authorization_status()` | Query current authorization without prompting |
+| `CalendarStore::authorize()` | Request full access (blocking) — returns `CalendarFullAccessToken` |
+| `CalendarStore::authorize_write_only()` | Request write-only access — returns `CalendarWriteOnlyToken` |
+| `CalendarStore::with_access(f)` | Authorize then run a closure with the token |
+| `CalendarStore::fetch(id, &token)` | Fetch one event by stable ID |
+| `CalendarStore::fetch_in_range(start, end, calendars, &token)` | Fetch all events in a date range (synchronous) |
+| `CalendarStore::save(&event, &token)` | Create or update an event; returns the stable ID |
+| `CalendarStore::remove(id, &token)` | Delete an event by stable ID |
+| `CalendarStore::lists(&token)` | Return all Calendars visible to this store |
+| `CalendarStore::default_calendar(&token)` | Return the default calendar for new events |
+
 ### Testing
 
-Most tests run automatically with `cargo test -p highlandcows-eventkit`. Tests that
-interact with the live Reminders database require TCC authorization and are marked
-`#[ignore]` so they are skipped by default. To run them locally:
+Most tests run automatically with `cargo test -p highlandcows-eventkit`. Tests that interact with the live Reminders or Calendar database require TCC authorization and are marked `#[ignore]` so they are skipped by default. To run them locally:
 
-1. Grant **Reminders** access to your terminal in **System Settings → Privacy & Security → Reminders**.
+1. Grant **Reminders** and **Calendar** access to your terminal in **System Settings → Privacy & Security**.
 2. Run:
 
 ```sh
 cargo test -p highlandcows-eventkit -- --ignored
 ```
 
-These tests create and delete real reminders in your Reminders database. They are
-not run in CI.
+These tests create and delete real reminders and events in your system databases. They are not run in CI.
 
 ### Error types
 
 | Variant | When |
 |---------|------|
-| `EventKitError::AuthorizationDenied` | The user denied access (or `NSRemindersFullAccessUsageDescription` is missing) |
+| `EventKitError::AuthorizationDenied` | The user denied access, or the required `Info.plist` key is missing |
 | `EventKitError::AuthorizationRestricted` | System policy prevents access (parental controls, MDM) |
 | `EventKitError::AuthorizationNotDetermined` | `authorize()` was not called before a CRUD method |
-| `EventKitError::ReminderNotFound(id)` | `fetch`, `remove`, or `save` (update path) received an unknown ID |
-| `EventKitError::ListNotFound(id)` | A list identifier resolved to no calendar |
+| `EventKitError::ReminderNotFound(id)` | A reminder with the given ID was not found |
+| `EventKitError::EventNotFound(id)` | A calendar event with the given ID was not found |
+| `EventKitError::ListNotFound(id)` | A reminder list identifier resolved to nothing |
+| `EventKitError::CalendarNotFound(id)` | A calendar identifier resolved to nothing |
 | `EventKitError::SaveFailed(msg)` | EventKit rejected the save; message from `NSError.localizedDescription` |
 | `EventKitError::RemoveFailed(msg)` | EventKit rejected the remove |
 | `EventKitError::Framework(msg)` | Internal framework error (e.g., callback channel dropped) |
