@@ -11,18 +11,20 @@
 //! | `highlandcows::SingleUserToken` | Capability token required by admin methods (`compact`, `migrate_*`) |
 //! | `highlandcows::DEFAULT_SINGLE_USER_TIMEOUT` | Default 30-second timeout for `as_single_user` |
 //! | `highlandcows::eventkit::ReminderStore` | macOS Reminders CRUD via EventKit (macOS only) |
+//! | `highlandcows::eventkit::CalendarStore` | macOS Calendar CRUD via EventKit (macOS only) |
 
 pub use highlandcows_isam::{
     Isam, IsamError, IsamIter, IsamResult, RangeIter, SingleUserToken, Transaction,
     DEFAULT_SINGLE_USER_TIMEOUT,
 };
 
-/// Re-exports of [`highlandcows_eventkit`] for macOS Reminders access.
-#[cfg(target_os = "macos")]
+/// Re-exports of [`highlandcows_eventkit`] for macOS Reminders and Calendar access.
+#[cfg(any(target_os = "macos", doc))]
 pub mod eventkit {
     pub use highlandcows_eventkit::{
-        EkAuthStatus, EkEntityType, EventKitError, EventKitResult, FullAccess, FullAccessToken,
-        Reminder, ReminderList, ReminderStore, ReminderStoreBuilder, RemindersAccess,
-        WriteOnlyToken,
+        Calendar, CalendarEvent, CalendarFullAccessToken, CalendarStore, CalendarStoreBuilder,
+        CalendarWriteOnlyToken, EkAuthStatus, EkEntityType, EventKitError, EventKitResult,
+        FullAccess, FullAccessToken, Reminder, ReminderList, ReminderStore, ReminderStoreBuilder,
+        RemindersAccess, WriteOnlyToken,
     };
 }
