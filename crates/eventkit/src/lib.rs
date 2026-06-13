@@ -30,6 +30,7 @@
 //! ## Quick start — Calendar
 //!
 //! ```ignore
+//! use std::time::{SystemTime, UNIX_EPOCH};
 //! use chrono::{DateTime, Duration, Utc};
 //! use highlandcows_eventkit::{CalendarStore, EventKitResult};
 //!
@@ -37,7 +38,9 @@
 //! let store = CalendarStore::builder().connect()?;
 //! let token = store.authorize()?;
 //!
-//! let end = Utc::now();
+//! // chrono is built without the `clock` feature, so use SystemTime for now().
+//! let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+//! let end: DateTime<Utc> = DateTime::from_timestamp(now_secs, 0).unwrap();
 //! let start = end - Duration::days(7);
 //! for event in store.fetch_in_range(start, end, None, &token)? {
 //!     println!("{} ({:?} – {:?})", event.title, event.start_date, event.end_date);
