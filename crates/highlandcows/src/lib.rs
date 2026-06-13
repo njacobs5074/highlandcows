@@ -19,7 +19,7 @@ pub use highlandcows_isam::{
 };
 
 /// Re-exports of [`highlandcows_eventkit`] for macOS Reminders and Calendar access.
-#[cfg(any(target_os = "macos", doc))]
+#[cfg(target_os = "macos")]
 pub mod eventkit {
     pub use highlandcows_eventkit::{
         Calendar, CalendarEvent, CalendarFullAccessToken, CalendarStore, CalendarStoreBuilder,

@@ -102,7 +102,7 @@
 //! synchronous and do not use callbacks. Call these off the main thread in UI
 //! applications.
 
-#![cfg(any(target_os = "macos", doc))]
+#![cfg(target_os = "macos")]
 
 mod auth;
 mod builder;
