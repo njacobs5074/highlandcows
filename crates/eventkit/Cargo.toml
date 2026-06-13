@@ -1,6 +1,6 @@
 [package]
 name        = "highlandcows-eventkit"
-version = "0.5.0"
+version = "0.5.1"
 edition     = "2021"
 description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Reminders and Calendar"
 license     = "MIT"
