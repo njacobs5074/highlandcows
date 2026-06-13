@@ -14,6 +14,10 @@ pub enum EventKitError {
     ReminderNotFound(String),
     #[error("reminder list not found: {0}")]
     ListNotFound(String),
+    #[error("event not found: {0}")]
+    EventNotFound(String),
+    #[error("calendar not found: {0}")]
+    CalendarNotFound(String),
     #[error("save failed: {0}")]
     SaveFailed(String),
     #[error("remove failed: {0}")]

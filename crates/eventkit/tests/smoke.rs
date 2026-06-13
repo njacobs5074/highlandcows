@@ -13,8 +13,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, NaiveDate, Utc};
-use highlandcows_eventkit::{Reminder, ReminderStore};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use highlandcows_eventkit::{CalendarStore, Reminder, ReminderStore};
 
 #[test]
 #[ignore = "requires TCC Reminders authorization"]
@@ -152,6 +152,63 @@ fn test_due_date_round_trip() {
     );
 
     store.remove(&id, &token).expect("cleanup remove failed");
+}
+
+// ── Calendar smoke tests ──────────────────────────────────────────────────────
+
+#[test]
+#[ignore = "requires TCC Calendar authorization"]
+fn test_calendar_authorize_and_list() {
+    let store = CalendarStore::builder().connect().unwrap();
+    let token = store.authorize().expect("calendar authorization failed");
+    let calendars = store.lists(&token).expect("lists() failed");
+    assert!(
+        !calendars.is_empty(),
+        "expected at least one Calendar in the system"
+    );
+}
+
+#[test]
+#[ignore = "requires TCC Calendar authorization"]
+fn test_calendar_fetch_in_range() {
+    let store = CalendarStore::builder().connect().unwrap();
+    let token = store.authorize().expect("calendar authorization failed");
+
+    // Fetch everything in the past 7 days — just verifying no panic or error.
+    let end: DateTime<Utc> = {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        DateTime::from_timestamp(secs, 0).unwrap()
+    };
+    let start = end - Duration::days(7);
+    let events = store
+        .fetch_in_range(start, end, None, &token)
+        .expect("fetch_in_range failed");
+    let _ = events;
+}
+
+#[test]
+#[ignore = "requires TCC Calendar authorization"]
+fn test_calendar_with_access() {
+    let store = CalendarStore::builder().connect().unwrap();
+    let calendars = store
+        .with_access(|token, store| store.lists(token))
+        .expect("with_access failed");
+    assert!(!calendars.is_empty(), "expected at least one Calendar");
+}
+
+#[test]
+#[ignore = "requires TCC Calendar authorization"]
+fn test_calendar_default_calendar() {
+    let store = CalendarStore::builder().connect().unwrap();
+    let token = store.authorize().expect("calendar authorization failed");
+    // default_calendar returning None is valid if the user hasn't configured one,
+    // so we just verify the call doesn't error or panic.
+    let _ = store
+        .default_calendar(&token)
+        .expect("default_calendar failed");
 }
 
 #[test]
