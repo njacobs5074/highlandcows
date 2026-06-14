@@ -35,10 +35,18 @@ sed -i '' \
   "s/^highlandcows-eventkit = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows-eventkit = \"$NEW_VERSION\"/" \
   README.md
 
+sed -i '' \
+  "s/^highlandcows-isam = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows-isam = \"$NEW_VERSION\"/" \
+  crates/isam/README.md
+
+sed -i '' \
+  "s/^highlandcows-eventkit = \"[0-9]*\.[0-9]*\.[0-9]*\"/highlandcows-eventkit = \"$NEW_VERSION\"/" \
+  crates/eventkit/README.md
+
 echo "Running cargo check..."
 cargo check --workspace
 
-git add crates/isam/Cargo.toml crates/highlandcows/Cargo.toml crates/eventkit/Cargo.toml Cargo.lock README.md
+git add crates/isam/Cargo.toml crates/highlandcows/Cargo.toml crates/eventkit/Cargo.toml Cargo.lock README.md crates/isam/README.md crates/eventkit/README.md
 git commit -m "chore: bump versions to $NEW_VERSION"
 git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
 

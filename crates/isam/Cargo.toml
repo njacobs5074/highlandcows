@@ -7,7 +7,7 @@ license       = "MIT"
 repository    = "https://github.com/njacobs5074/highlandcows"
 homepage      = "https://github.com/njacobs5074/highlandcows"
 documentation = "https://njacobs5074.github.io/highlandcows/highlandcows_isam"
-readme        = "../../README.md"
+readme        = "README.md"
 keywords      = ["isam", "database", "storage", "btree", "persistence"]
 categories    = ["database-implementations", "data-structures"]
 

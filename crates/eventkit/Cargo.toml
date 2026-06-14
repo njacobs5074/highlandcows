@@ -6,6 +6,7 @@ description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Remind
 license     = "MIT"
 repository  = "https://github.com/njacobs5074/highlandcows"
 homepage    = "https://github.com/njacobs5074/highlandcows"
+readme      = "README.md"
 keywords    = ["eventkit", "reminders", "calendar", "macos", "apple"]
 categories  = ["os::macos-apis"]
 
