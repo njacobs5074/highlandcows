@@ -141,6 +141,7 @@ impl CalendarStore {
     ) -> EventKitResult<Option<CalendarEvent>> {
         use objc2_foundation::NSString;
 
+        self.inner.refresh();
         let ns_id = NSString::from_str(id);
         let item = unsafe { self.inner.0.calendarItemWithIdentifier(&ns_id) };
 
@@ -166,6 +167,7 @@ impl CalendarStore {
     ) -> EventKitResult<Vec<CalendarEvent>> {
         use objc2_foundation::{NSArray, NSString};
 
+        self.inner.refresh();
         let ek_cals: Option<Vec<_>> = calendars.map(|ids| {
             ids.iter()
                 .filter_map(|id| {
@@ -269,6 +271,7 @@ impl CalendarStore {
 
     /// Return all Calendar entries visible to this store.
     pub fn lists(&self, _token: &CalendarFullAccessToken) -> EventKitResult<Vec<Calendar>> {
+        self.inner.refresh();
         let cals = unsafe { self.inner.0.calendarsForEntityType(EKEntityType::Event) };
         Ok(cals.iter().map(|c| Calendar::from_ek(&c)).collect())
     }
