@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use objc2::rc::Retained;
 use objc2_event_kit::{EKEventStore, EKReminder};
-use objc2_foundation::NSString;
+use objc2_foundation::{NSString, NSURL};
 
 use crate::date_util::{nsdate_components_to_utc, nsdate_to_utc, utc_to_nsdate_components};
 use crate::error::{EventKitError, EventKitResult};
@@ -20,6 +20,8 @@ pub struct Reminder {
     pub is_completed: bool,
     /// 0 = none, 1 = high, 5 = medium, 9 = low (EKReminder convention).
     pub priority: u8,
+    /// Optional URL attached to the reminder (from `EKCalendarItem.URL`).
+    pub url: Option<String>,
 }
 
 impl Reminder {
@@ -33,6 +35,9 @@ impl Reminder {
         let priority = unsafe { ek.priority() as u8 };
         let due_date = unsafe { ek.dueDateComponents() }.and_then(nsdate_components_to_utc);
         let completion_date = unsafe { ek.completionDate() }.and_then(nsdate_to_utc);
+        let url = unsafe { ek.URL() }
+            .and_then(|u| u.absoluteString())
+            .map(|s| s.to_string());
 
         Reminder {
             identifier,
@@ -43,6 +48,7 @@ impl Reminder {
             completion_date,
             is_completed,
             priority,
+            url,
         }
     }
 
@@ -61,11 +67,17 @@ impl Reminder {
             None => unsafe { EKReminder::reminderWithEventStore(store) },
         };
 
+        let ns_url = self
+            .url
+            .as_deref()
+            .and_then(|s| NSURL::URLWithString(&NSString::from_str(s)));
+
         unsafe {
             ek.setTitle(Some(&NSString::from_str(&self.title)));
             ek.setNotes(self.notes.as_deref().map(NSString::from_str).as_deref());
             ek.setCompleted(self.is_completed);
             ek.setPriority(self.priority as _);
+            ek.setURL(ns_url.as_deref());
         }
 
         match self.due_date {
