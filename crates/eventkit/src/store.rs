@@ -116,6 +116,7 @@ impl ReminderStore {
     pub fn fetch(&self, id: &str, _token: &FullAccessToken) -> EventKitResult<Option<Reminder>> {
         use objc2_foundation::NSString;
 
+        self.inner.refresh();
         let ns_id = NSString::from_str(id);
         let item = unsafe { self.inner.0.calendarItemWithIdentifier(&ns_id) };
 
@@ -225,6 +226,7 @@ impl ReminderStore {
 
     /// Return all Reminder lists visible to this store.
     pub fn lists(&self, _token: &FullAccessToken) -> EventKitResult<Vec<ReminderList>> {
+        self.inner.refresh();
         let cals = unsafe { self.inner.0.calendarsForEntityType(EKEntityType::Reminder) };
         Ok(cals.iter().map(|c| ReminderList::from_ek(&c)).collect())
     }
@@ -246,6 +248,8 @@ impl ReminderStore {
         incomplete_only: bool,
     ) -> EventKitResult<Vec<Reminder>> {
         use objc2_foundation::{NSArray, NSString};
+
+        self.inner.refresh();
 
         // Resolve list identifiers to EKCalendar objects.
         let ek_cals: Option<Vec<_>> = lists.map(|ids| {
