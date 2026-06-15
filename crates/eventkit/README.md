@@ -12,7 +12,7 @@ A Rust wrapper around Apple's EventKit framework providing full CRUD access to b
 
 ```toml
 [dependencies]
-highlandcows-eventkit = "0.5.5"
+highlandcows-eventkit = "0.5.6"
 ```
 
 ---
