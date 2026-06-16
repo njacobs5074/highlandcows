@@ -67,6 +67,10 @@ Source layout under `crates/isam/src/`:
 Re-exports the public API of `highlandcows-isam` for consumers who prefer a single
 dependency name.
 
+## iA Writer output
+
+`/Coding/projects/highlandcows/claude-output`
+
 ## Testing ground
 
 `highlandcows_graphdb` (a sibling project at `../highlandcows_graphdb/`) is used as a
