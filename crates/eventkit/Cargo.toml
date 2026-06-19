@@ -37,7 +37,7 @@ objc2-foundation = { version = "0.3.2", features = [
     "NSURL",
 ] }
 block2    = "0.6.2"
-thiserror = "1"
+thiserror = "2"
 chrono    = { version = "0.4", features = ["std"], default-features = false }
 
 [features]

@@ -14,7 +14,7 @@ categories    = ["database-implementations", "data-structures"]
 [dependencies]
 serde     = { version = "1", features = ["derive"] }
 bincode   = "1"
-thiserror = "1"
+thiserror = "2"
 
 [dev-dependencies]
 tempfile  = "3"
