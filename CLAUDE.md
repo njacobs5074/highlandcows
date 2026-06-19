@@ -85,6 +85,8 @@ gh api repos/<owner>/<action>/git/tags/<sha> --jq '.object.sha'
 
 Then update both the SHA and the `# vX` comment in the workflow file.
 
+**Note for `dtolnay/rust-toolchain`:** this action uses its tag name (e.g. `@stable`) as the toolchain specifier. When pinned to a SHA, you must supply `with: toolchain: stable` explicitly — otherwise the `toolchain` input is empty and the action fails.
+
 ### cargo audit / cargo deny
 
 `cargo audit` and `cargo deny check` run in CI. Run them locally before opening a PR.
