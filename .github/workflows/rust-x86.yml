@@ -16,9 +16,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5
+    - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    - name: Security audit
+      run: cargo install cargo-audit --locked && cargo audit
+    - name: Dependency licenses and advisories
+      run: cargo install cargo-deny --locked && cargo deny check
