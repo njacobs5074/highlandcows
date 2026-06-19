@@ -1,0 +1,30 @@
+[advisories]
+version = 2
+# Deny crates with known security vulnerabilities.
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = [
+    # bincode 1.3.3 is intentionally pinned — we use its simpler API and treat
+    # v1.3.3 as a stable, complete release (which the bincode team themselves stated).
+    # No safe upgrade path exists; migration to an alternative is a separate project.
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.x intentionally pinned; v1.3.3 is stable per maintainers" },
+]
+
+[licenses]
+version = 2
+# Allow common permissive and weak-copyleft licenses used in the Rust ecosystem.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+]
+
+[bans]
+# Deny multiple versions of the same crate (keeps the dependency graph clean).
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

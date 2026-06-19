@@ -3,6 +3,7 @@
 ![Build & Tests (x86-64)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-x86.yml/badge.svg?branch=main)
 ![Build & Tests (ARM64)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-arm.yml/badge.svg?branch=main)
 ![Build & Tests (macOS)](https://github.com/njacobs5074/highlandcows/actions/workflows/rust-macos.yml/badge.svg?branch=main)
+[![dependency status](https://deps.rs/repo/github/njacobs5074/highlandcows/status.svg)](https://deps.rs/repo/github/njacobs5074/highlandcows)
 
 A Cargo workspace of Rust libraries published under the `highlandcows` umbrella crate.
 
@@ -594,6 +595,17 @@ For any non-trivial change, create a branch before editing. Follow conventional-
 | Chore | `chore/update-dependencies` |
 
 Typo fixes and trivial comment edits may go directly on the current branch.
+
+### Security
+
+CI runs two supply-chain checks on every push and pull request:
+
+- **`cargo audit`** — scans `Cargo.lock` against the [RustSec advisory database](https://rustsec.org) and fails on any known vulnerability
+- **`cargo deny`** — enforces allowed dependency licenses and blocks crates listed in security advisories; configuration is in [`deny.toml`](deny.toml)
+
+**GitHub Actions** are pinned to full commit SHAs rather than mutable version tags (e.g. `actions/checkout@<sha>  # v5`). This prevents a compromised tag from injecting malicious code into CI. When upgrading an action, resolve the new commit SHA and update both the SHA and the comment tag.
+
+**Known advisory exceptions** — `bincode` 1.x is flagged as unmaintained (`RUSTSEC-2025-0141`) and is explicitly ignored in `deny.toml`. Bincode 1.3.3 is the final stable release; the maintainers stated it is complete. Migration to an alternative serialization library is a separate workstream.
 
 ### Releasing a new version
 
