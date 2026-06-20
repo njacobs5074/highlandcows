@@ -254,6 +254,9 @@ impl ReminderStore {
     }
 
     /// Create a new Reminder list in the given source. Returns the created list.
+    ///
+    /// **Note:** tested with iCloud sources only. Behavior with other source types
+    /// (On My Mac, Exchange, etc.) is unknown.
     pub fn create_list(
         &self,
         title: &str,

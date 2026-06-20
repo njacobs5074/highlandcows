@@ -12,7 +12,7 @@ A Rust wrapper around Apple's EventKit framework providing full CRUD access to b
 
 ```toml
 [dependencies]
-highlandcows-eventkit = "0.5.7"
+highlandcows-eventkit = "0.5.8"
 ```
 
 ---
@@ -133,7 +133,7 @@ Plain command-line binaries inherit the TCC identity of the terminal that launch
 | `ReminderStore::remove(id, &token)` | Delete a reminder by stable ID |
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
-| `ReminderStore::create_list(title, source_id, &token)` | Create a new Reminder list in the given source; returns the created list |
+| `ReminderStore::create_list(title, source_id, &token)` | Create a new Reminder list in the given source; returns the created list (tested with iCloud sources only) |
 | `ReminderStore::remove_list(id, &token)` | Delete a Reminder list by its identifier |
 | `ReminderStore::sources(&token)` | Return all account sources (iCloud, On My Mac, …) visible to this store |
 | `ReminderStore::default_source(&token)` | Return the source that owns the system default Reminders list |
