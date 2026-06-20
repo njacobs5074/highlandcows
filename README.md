@@ -355,6 +355,11 @@ A Rust wrapper around Apple's EventKit framework providing full CRUD access to b
 - **Cloneable handles** — `ReminderStore` and `CalendarStore` are `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
 - **`with_access` closure helper** — bundles authorization and access in one call, mirroring `Isam::read` / `Isam::write`
 
+### Limitations
+
+- **No sub-task support** — EventKit does not expose sub-tasks (subtasks) through its public API, so this crate cannot create or read them.
+- **iCloud sources only (Reminders list creation)** — `create_list` has only been tested with iCloud sources. Behavior with other source types (On My Mac, Exchange, etc.) is unknown.
+
 ### Installation
 
 ```toml

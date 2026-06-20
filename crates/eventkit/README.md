@@ -32,6 +32,13 @@ highlandcows-eventkit = "0.5.8"
 
 ---
 
+## Limitations
+
+- **No sub-task support** — EventKit does not expose sub-tasks (subtasks) through its public API, so this crate cannot create or read them.
+- **iCloud sources only (Reminders list creation)** — `create_list` has only been tested with iCloud sources. Behavior with other source types (On My Mac, Exchange, etc.) is unknown.
+
+---
+
 ## Quick start — Reminders
 
 ```rust
