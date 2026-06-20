@@ -11,6 +11,7 @@ use crate::error::{EventKitError, EventKitResult};
 use crate::inner::Inner;
 use crate::list::ReminderList;
 use crate::reminder::Reminder;
+use crate::source::Source;
 use crate::types::EkAuthStatus;
 
 /// Facade for accessing the system Reminders database via Apple's EventKit.
@@ -238,6 +239,60 @@ impl ReminderStore {
     ) -> EventKitResult<Option<ReminderList>> {
         let cal = unsafe { self.inner.0.defaultCalendarForNewReminders() };
         Ok(cal.map(|c| ReminderList::from_ek(&c)))
+    }
+
+    /// Remove a Reminder list by its identifier.
+    pub fn remove_list(&self, id: &str, _token: &FullAccessToken) -> EventKitResult<()> {
+        use objc2_foundation::NSString;
+
+        let ns_id = NSString::from_str(id);
+        let calendar = unsafe { self.inner.0.calendarWithIdentifier(&ns_id) }
+            .ok_or_else(|| EventKitError::ListNotFound(id.to_owned()))?;
+
+        unsafe { self.inner.0.removeCalendar_commit_error(&calendar, true) }
+            .map_err(|err| EventKitError::RemoveFailed(nserror_message(&err)))
+    }
+
+    /// Create a new Reminder list in the given source. Returns the created list.
+    pub fn create_list(
+        &self,
+        title: &str,
+        source_id: &str,
+        _token: &FullAccessToken,
+    ) -> EventKitResult<ReminderList> {
+        use objc2_event_kit::{EKCalendar, EKEntityType as ET};
+        use objc2_foundation::NSString;
+
+        let ns_source_id = NSString::from_str(source_id);
+        let source = unsafe { self.inner.0.sourceWithIdentifier(&ns_source_id) }
+            .ok_or_else(|| EventKitError::SourceNotFound(source_id.to_owned()))?;
+
+        let calendar = unsafe {
+            EKCalendar::calendarForEntityType_eventStore(ET::Reminder, &self.inner.0)
+        };
+        let ns_title = NSString::from_str(title);
+        unsafe { calendar.setTitle(&ns_title) };
+        unsafe { calendar.setSource(Some(&source)) };
+
+        unsafe { self.inner.0.saveCalendar_commit_error(&calendar, true) }
+            .map_err(|err| EventKitError::SaveFailed(nserror_message(&err)))?;
+
+        Ok(ReminderList::from_ek(&calendar))
+    }
+
+    // ── Sources ───────────────────────────────────────────────────────────────
+
+    /// Return all account sources (e.g. iCloud, On My Mac) visible to this store.
+    pub fn sources(&self, _token: &FullAccessToken) -> EventKitResult<Vec<Source>> {
+        self.inner.refresh();
+        let srcs = unsafe { self.inner.0.sources() };
+        Ok(srcs.iter().map(|s| Source::from_ek(&s)).collect())
+    }
+
+    /// Return the source that owns the system default Reminders list, if any.
+    pub fn default_source(&self, _token: &impl RemindersAccess) -> EventKitResult<Option<Source>> {
+        let cal = unsafe { self.inner.0.defaultCalendarForNewReminders() };
+        Ok(cal.and_then(|c| unsafe { c.source() }).map(|s| Source::from_ek(&s)))
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────

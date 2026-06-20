@@ -350,6 +350,8 @@ A Rust wrapper around Apple's EventKit framework providing full CRUD access to b
 - **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `remove`
 - **Full Calendar CRUD** — `fetch`, `fetch_in_range`, `save`, `remove`; `fetch_in_range` is synchronous (no callback bridge needed)
 - **List/calendar enumeration** — `lists`, `default_list` (Reminders); `lists`, `default_calendar` (Calendar)
+- **Reminder list management** — `create_list` (in a named source), `remove_list`
+- **Source enumeration** — `sources`, `default_source` expose the account sources (iCloud, On My Mac, …) that contain Reminder lists
 - **Cloneable handles** — `ReminderStore` and `CalendarStore` are `Clone + Send + Sync`; all clones share one underlying `EKEventStore`
 - **`with_access` closure helper** — bundles authorization and access in one call, mirroring `Isam::read` / `Isam::write`
 
@@ -453,6 +455,10 @@ Plain command-line binaries inherit the TCC identity of the terminal that launch
 | `ReminderStore::remove(id, &token)` | Delete a reminder by stable ID |
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
+| `ReminderStore::create_list(title, source_id, &token)` | Create a new Reminder list in the given source; returns the created list |
+| `ReminderStore::remove_list(id, &token)` | Delete a Reminder list by its identifier |
+| `ReminderStore::sources(&token)` | Return all account sources (iCloud, On My Mac, …) visible to this store |
+| `ReminderStore::default_source(&token)` | Return the source that owns the system default Reminders list |
 
 ### API — Calendar
 
@@ -494,6 +500,7 @@ These tests create and delete real reminders and events in your system databases
 | `EventKitError::ReminderNotFound(id)` | A reminder with the given ID was not found |
 | `EventKitError::EventNotFound(id)` | A calendar event with the given ID was not found |
 | `EventKitError::ListNotFound(id)` | A reminder list identifier resolved to nothing |
+| `EventKitError::SourceNotFound(id)` | A source identifier passed to `create_list` resolved to nothing |
 | `EventKitError::CalendarNotFound(id)` | A calendar identifier resolved to nothing |
 | `EventKitError::SaveFailed(msg)` | EventKit rejected the save; message from `NSError.localizedDescription` |
 | `EventKitError::RemoveFailed(msg)` | EventKit rejected the remove |

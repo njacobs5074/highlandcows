@@ -12,6 +12,7 @@
 //! | `highlandcows::DEFAULT_SINGLE_USER_TIMEOUT` | Default 30-second timeout for `as_single_user` |
 //! | `highlandcows::eventkit::ReminderStore` | macOS Reminders CRUD via EventKit (macOS only) |
 //! | `highlandcows::eventkit::CalendarStore` | macOS Calendar CRUD via EventKit (macOS only) |
+//! | `highlandcows::eventkit::Source` | Account source (iCloud, On My Mac, …) returned by `ReminderStore::sources` |
 
 pub use highlandcows_isam::{
     Isam, IsamError, IsamIter, IsamResult, RangeIter, SingleUserToken, Transaction,
@@ -25,6 +26,6 @@ pub mod eventkit {
         Calendar, CalendarEvent, CalendarFullAccessToken, CalendarStore, CalendarStoreBuilder,
         CalendarWriteOnlyToken, EkAuthStatus, EkEntityType, EventKitError, EventKitResult,
         FullAccess, FullAccessToken, Reminder, ReminderList, ReminderStore, ReminderStoreBuilder,
-        RemindersAccess, WriteOnlyToken,
+        RemindersAccess, Source, WriteOnlyToken,
     };
 }

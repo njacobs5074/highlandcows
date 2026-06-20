@@ -93,6 +93,32 @@
 //! launches them, so during development the permission prompt names your
 //! terminal app.
 //!
+//! ## Reminder list management and sources
+//!
+//! `ReminderStore` exposes account sources (iCloud, On My Mac, etc.) and supports
+//! creating and deleting Reminder lists:
+//!
+//! ```ignore
+//! # use highlandcows_eventkit::{ReminderStore, EventKitResult};
+//! # fn main() -> EventKitResult<()> {
+//! let store = ReminderStore::builder().connect()?;
+//! let token = store.authorize()?;
+//!
+//! // Enumerate account sources to find the right one.
+//! for source in store.sources(&token)? {
+//!     println!("{} ({})", source.title, source.source_identifier);
+//! }
+//!
+//! // Create a new list inside a specific source.
+//! let list = store.create_list("Shopping", "<source_id>", &token)?;
+//! println!("Created: {} ({})", list.title, list.calendar_identifier);
+//!
+//! // Delete it when no longer needed.
+//! store.remove_list(&list.calendar_identifier, &token)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
 //! ## Threading
 //!
 //! Both [`ReminderStore`] and [`CalendarStore`] are `Send + Sync` and cheap
@@ -115,6 +141,7 @@ mod error;
 mod inner;
 mod list;
 mod reminder;
+mod source;
 mod store;
 mod types;
 
@@ -130,5 +157,6 @@ pub use calendar_store::CalendarStore;
 pub use error::{EventKitError, EventKitResult};
 pub use list::ReminderList;
 pub use reminder::Reminder;
+pub use source::Source;
 pub use store::ReminderStore;
 pub use types::{EkAuthStatus, EkEntityType};
