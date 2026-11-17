@@ -230,3 +230,131 @@ fn test_single_user_mode_not_reentrant() {
 
     assert_matches!(result, Err(IsamError::SingleUserMode));
 }
+
+// ── same-thread reentrancy / deadlock detection ──────────────────────────── //
+
+#[test]
+fn test_schema_version_while_txn_open_returns_would_deadlock() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    // Run on a separate thread and hand results back over a channel with a
+    // bounded `recv_timeout` — if the fix regresses, this call would block
+    // forever on the same thread's own lock, and we want the test to fail
+    // fast rather than hang the suite.
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _txn = db.begin_transaction().unwrap();
+        let key_result = db.key_schema_version();
+        let val_result = db.val_schema_version();
+        tx.send((key_result, val_result)).unwrap();
+    });
+
+    let (key_result, val_result) = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("call hung instead of failing fast with WouldDeadlock");
+    assert_matches!(key_result, Err(IsamError::WouldDeadlock));
+    assert_matches!(val_result, Err(IsamError::WouldDeadlock));
+}
+
+#[test]
+fn test_nested_begin_transaction_returns_would_deadlock() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let _txn = db.begin_transaction().unwrap();
+        // Second begin_transaction on the same thread, before the first
+        // commits or drops, would deadlock on the bare Mutex without the fix.
+        let result = db.begin_transaction().map(|_| ());
+        tx.send(result).unwrap();
+    });
+
+    let result = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("nested begin_transaction hung instead of failing fast");
+    assert_matches!(result, Err(IsamError::WouldDeadlock));
+}
+
+#[test]
+fn test_admin_method_while_txn_open_returns_would_deadlock() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let result = db.as_single_user(TIMEOUT, |token, db| {
+            let _txn = db.begin_transaction()?;
+            db.compact(token)
+        });
+        tx.send(result).unwrap();
+    });
+
+    let result = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("compact() hung instead of failing fast with WouldDeadlock");
+    assert_matches!(result, Err(IsamError::WouldDeadlock));
+}
+
+#[test]
+fn test_owner_cleared_after_commit() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let txn = db.begin_transaction().unwrap();
+    txn.commit().unwrap();
+
+    // If `commit` forgot to clear the reentrancy flag, this would wrongly
+    // fail with WouldDeadlock even though the first transaction is gone.
+    let txn2 = db.begin_transaction().unwrap();
+    txn2.commit().unwrap();
+}
+
+#[test]
+fn test_owner_cleared_after_rollback() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let txn = db.begin_transaction().unwrap();
+    txn.rollback().unwrap();
+
+    let txn2 = db.begin_transaction().unwrap();
+    txn2.commit().unwrap();
+}
+
+#[test]
+fn test_owner_cleared_after_drop() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    {
+        let _txn = db.begin_transaction().unwrap();
+        // Dropped here without commit/rollback — exercises the Drop path.
+    }
+
+    let txn2 = db.begin_transaction().unwrap();
+    txn2.commit().unwrap();
+}
+
+#[test]
+fn test_owner_check_is_per_thread_not_global() {
+    let (_dir, db) = common::make_db::<u32, String>();
+    let db2 = db.clone();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier2 = Arc::clone(&barrier);
+
+    let handle = thread::spawn(move || {
+        let txn = db2.begin_transaction().unwrap();
+        // Signal: thread A's transaction is live.
+        barrier2.wait();
+        thread::sleep(Duration::from_millis(50));
+        txn.commit().unwrap();
+    });
+
+    // Wait for thread A's transaction to be live.
+    barrier.wait();
+
+    // Thread B is not the owner, so this is ordinary cross-thread lock
+    // contention, not a self-deadlock — it must block and then succeed once
+    // thread A commits, rather than being wrongly rejected as WouldDeadlock.
+    let result = db.key_schema_version();
+    assert_matches!(result, Ok(0));
+
+    handle.join().unwrap();
+}

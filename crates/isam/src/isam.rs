@@ -326,8 +326,9 @@ where
     /// Return information about all secondary indices registered on this database.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     ///
     /// # Example
     /// ```
@@ -734,8 +735,9 @@ where
     /// default to `0` for newly created databases.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     ///
     /// # Example
     /// ```
@@ -757,8 +759,9 @@ where
     /// default to `0` for newly created databases.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     ///
     /// # Example
     /// ```
@@ -798,9 +801,11 @@ where
     /// is affected; other secondary indices are left untouched.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     ///
     /// # Example
     /// ```
@@ -899,9 +904,11 @@ where
     /// then re-opens them in place.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     ///
     /// # Example
     /// ```
@@ -965,9 +972,11 @@ where
     /// place.  The key schema version is preserved.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     ///
     /// # Example
     /// ```
@@ -1049,9 +1058,11 @@ where
     /// place.  The value schema version is preserved.
     ///
     /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     ///
     /// # Example
     /// ```

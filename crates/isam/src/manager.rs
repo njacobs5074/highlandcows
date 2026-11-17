@@ -21,6 +21,11 @@ pub(crate) struct TransactionManager<K, V> {
     pub(crate) single_user_active: Arc<AtomicBool>,
     /// Thread that owns single-user mode, set when `single_user_active` is `true`.
     pub(crate) single_user_owner: Arc<Mutex<Option<ThreadId>>>,
+    /// Thread that currently holds `storage`'s lock via an open `Transaction`,
+    /// if any. Used only to detect same-thread reentrancy and fail fast with
+    /// `WouldDeadlock`; it plays no role in actual mutual exclusion — the
+    /// `Mutex` on `storage` still does that.
+    pub(crate) txn_owner: Arc<Mutex<Option<ThreadId>>>,
 }
 
 impl<K, V> TransactionManager<K, V>
@@ -43,13 +48,18 @@ where
             storage: Arc::new(Mutex::new(storage)),
             single_user_active: Arc::new(AtomicBool::new(false)),
             single_user_owner: Arc::new(Mutex::new(None)),
+            txn_owner: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Acquire the storage lock, checking single-user mode first.
+    /// Acquire the storage lock, checking single-user mode and same-thread
+    /// reentrancy first.
     ///
     /// Returns `Err(IsamError::SingleUserMode)` if single-user mode is active
-    /// and the calling thread is not the owner.
+    /// and the calling thread is not the owner, or `Err(IsamError::WouldDeadlock)`
+    /// if the calling thread already holds the lock via an open `Transaction` —
+    /// in which case blocking on `storage.lock()` would hang forever rather than
+    /// eventually succeed.
     pub(crate) fn lock_storage(&self) -> IsamResult<std::sync::MutexGuard<'_, IsamStorage<K, V>>> {
         if self.single_user_active.load(Ordering::Acquire) {
             let owner = self
@@ -60,12 +70,24 @@ where
                 return Err(IsamError::SingleUserMode);
             }
         }
+
+        {
+            let owner = self.txn_owner.lock().map_err(|_| IsamError::LockPoisoned)?;
+            if *owner == Some(std::thread::current().id()) {
+                return Err(IsamError::WouldDeadlock);
+            }
+        }
+
         self.storage.lock().map_err(|_| IsamError::LockPoisoned)
     }
 
     pub(crate) fn begin(&self) -> IsamResult<Transaction<'_, K, V>> {
         let guard = self.lock_storage()?;
-        Ok(Transaction::new(guard))
+        *self
+            .txn_owner
+            .lock()
+            .map_err(|_| IsamError::LockPoisoned)? = Some(std::thread::current().id());
+        Ok(Transaction::new(guard, Arc::clone(&self.txn_owner)))
     }
 }
 
@@ -75,6 +97,7 @@ impl<K, V> Clone for TransactionManager<K, V> {
             storage: Arc::clone(&self.storage),
             single_user_active: Arc::clone(&self.single_user_active),
             single_user_owner: Arc::clone(&self.single_user_owner),
+            txn_owner: Arc::clone(&self.txn_owner),
         }
     }
 }
@@ -109,8 +132,18 @@ impl<K, V> TransactionManager<K, V> {
     ///
     /// Returns:
     /// - `Err(IsamError::SingleUserMode)` if another thread already holds single-user mode.
-    /// - `Err(IsamError::Timeout)` if an in-flight transaction did not finish within `timeout`.
+    /// - `Err(IsamError::WouldDeadlock)` if the calling thread already holds an open
+    ///   `Transaction` — waiting would never succeed, since nothing else can release
+    ///   a lock this thread itself holds.
+    /// - `Err(IsamError::Timeout)` if an in-flight transaction (on another thread) did
+    ///   not finish within `timeout`.
     pub(crate) fn enter_single_user_mode(&self, timeout: Duration) -> IsamResult<SingleUserGuard<K, V>> {
+        // Fail fast rather than spin to a timeout if the calling thread already
+        // holds the lock itself — no amount of waiting will free it.
+        if *self.txn_owner.lock().map_err(|_| IsamError::LockPoisoned)? == Some(std::thread::current().id()) {
+            return Err(IsamError::WouldDeadlock);
+        }
+
         // Atomically claim single-user mode; fail fast if already active.
         self.single_user_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
