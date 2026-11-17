@@ -231,6 +231,38 @@ fn test_single_user_mode_not_reentrant() {
     assert_matches!(result, Err(IsamError::SingleUserMode));
 }
 
+#[test]
+fn test_single_user_mode_error_takes_priority_over_would_deadlock() {
+    // If a thread both holds its own open Transaction AND a different thread
+    // already owns single-user mode, SingleUserMode must win: releasing the
+    // caller's own transaction wouldn't be enough to make the call succeed,
+    // since someone else's exclusive hold is the actual blocker. (Before the
+    // checks in `enter_single_user_mode` were reordered, the txn_owner check
+    // ran first and this case returned WouldDeadlock instead.)
+    let (_dir, db) = common::make_db::<u32, String>();
+    let db_a = db.clone();
+
+    // Main thread opens (and holds) its own transaction first, so thread A's
+    // single-user claim below can succeed (claiming the flag doesn't need
+    // the storage lock), but its subsequent spin-wait can't — our txn is
+    // still holding the real lock.
+    let txn = db.begin_transaction().unwrap();
+
+    let handle = thread::spawn(move || db_a.as_single_user(TIMEOUT, |_token, _db| Ok(())));
+
+    // Give thread A time to claim the single-user flag and start spinning.
+    thread::sleep(Duration::from_millis(50));
+
+    // Even though the main thread holds its own open transaction, thread A
+    // already owns single-user mode — that must be reported, not WouldDeadlock.
+    let result = db.clone().as_single_user(TIMEOUT, |_token, _db| Ok(()));
+    assert_matches!(result, Err(IsamError::SingleUserMode));
+
+    // Release our transaction so thread A's spin succeeds.
+    txn.commit().unwrap();
+    handle.join().unwrap().unwrap();
+}
+
 // ── same-thread reentrancy / deadlock detection ──────────────────────────── //
 
 #[test]
