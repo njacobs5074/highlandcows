@@ -1,15 +1,13 @@
 /// `Transaction<'a, K, V>` — a bounded execution context for ISAM operations.
 ///
-/// Holds the `MutexGuard` for its entire lifetime (serializable isolation) and
-/// an undo log so that a rollback (explicit or via `Drop`) can restore the
+/// Holds the `StorageGuard` for its entire lifetime (serializable isolation)
+/// and an undo log so that a rollback (explicit or via `Drop`) can restore the
 /// index to the state it had before the transaction began.
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::ThreadId;
-
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::IsamResult;
+use crate::manager::StorageGuard;
 use crate::storage::IsamStorage;
 use crate::store::RecordRef;
 
@@ -31,13 +29,9 @@ where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
-    guard: MutexGuard<'a, IsamStorage<K, V>>,
+    guard: StorageGuard<'a, K, V>,
     undo_log: Vec<UndoEntry<K, V>>,
     committed: bool,
-    /// Shared with `TransactionManager::txn_owner`; cleared on every exit path
-    /// (`commit`, `rollback`, `Drop`) while `guard` is still held, so there is
-    /// no window where another thread's ownership could be wiped out.
-    owner: Arc<Mutex<Option<ThreadId>>>,
 }
 
 impl<'a, K, V> Transaction<'a, K, V>
@@ -45,21 +39,11 @@ where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
-    pub(crate) fn new(guard: MutexGuard<'a, IsamStorage<K, V>>, owner: Arc<Mutex<Option<ThreadId>>>) -> Self {
+    pub(crate) fn new(guard: StorageGuard<'a, K, V>) -> Self {
         Self {
             guard,
             undo_log: Vec::new(),
             committed: false,
-            owner,
-        }
-    }
-
-    /// Clear the reentrancy-detection owner flag. Must be called while `guard`
-    /// is still alive (i.e. before the real lock is released), so that another
-    /// thread cannot have already become the new owner by the time this runs.
-    fn release_ownership(&self) {
-        if let Ok(mut owner) = self.owner.lock() {
-            *owner = None;
         }
     }
 
@@ -108,9 +92,8 @@ where
     pub fn commit(mut self) -> IsamResult<()> {
         self.guard.fsync()?;
         self.committed = true;
-        self.release_ownership();
         Ok(())
-        // MutexGuard drops here, releasing the lock
+        // StorageGuard drops here, clearing txn_owner and releasing the lock.
     }
 
     /// Roll back all changes made in this transaction and release the lock.
@@ -138,7 +121,6 @@ where
     pub fn rollback(mut self) -> IsamResult<()> {
         self.do_rollback()?;
         self.committed = true;
-        self.release_ownership();
         Ok(())
     }
 
@@ -178,9 +160,10 @@ where
     V: Serialize + DeserializeOwned,
 {
     fn drop(&mut self) {
-        self.release_ownership();
         if !self.committed {
             let _ = self.do_rollback();
         }
+        // `guard` (a `StorageGuard`) drops right after this method returns,
+        // clearing `txn_owner` before the real lock is released.
     }
 }

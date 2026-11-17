@@ -295,6 +295,43 @@ fn test_admin_method_while_txn_open_returns_would_deadlock() {
 }
 
 #[test]
+fn test_reentrancy_from_inside_migration_closure_returns_would_deadlock() {
+    // The previous three tests cover "a Transaction is open, then an admin
+    // method is called" — this covers the opposite direction: an admin
+    // method (migrate_index) is itself holding the lock, and a closure it
+    // invokes re-enters the database on the same thread via a captured
+    // clone. Both directions must be caught, or this is only half a fix.
+    let (_dir, db) = common::make_person_db();
+
+    db.write(|txn| db.insert(txn, 1u32, &common::Person { name: "Alice".into(), city: "London".into() }))
+        .unwrap();
+
+    let db2 = db.clone();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let result = db.as_single_user(TIMEOUT, |token, db| {
+            db.migrate_index(
+                "city",
+                1,
+                move |v| {
+                    let reentrant_result = db2.key_schema_version();
+                    tx.send(reentrant_result).unwrap();
+                    Ok(v)
+                },
+                token,
+            )
+        });
+        result.unwrap();
+    });
+
+    let reentrant_result = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("reentrant call from inside migrate_index's closure hung instead of failing fast");
+    assert_matches!(reentrant_result, Err(IsamError::WouldDeadlock));
+}
+
+#[test]
 fn test_owner_cleared_after_commit() {
     let (_dir, db) = common::make_db::<u32, String>();
 

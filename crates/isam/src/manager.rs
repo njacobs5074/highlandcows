@@ -2,9 +2,10 @@
 ///
 /// This type is `pub(crate)` — callers interact with it only through `Isam`.
 /// It is `Clone` (via `Arc::clone`) so that `Isam` can be cloned freely.
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
@@ -57,10 +58,17 @@ where
     ///
     /// Returns `Err(IsamError::SingleUserMode)` if single-user mode is active
     /// and the calling thread is not the owner, or `Err(IsamError::WouldDeadlock)`
-    /// if the calling thread already holds the lock via an open `Transaction` —
-    /// in which case blocking on `storage.lock()` would hang forever rather than
-    /// eventually succeed.
-    pub(crate) fn lock_storage(&self) -> IsamResult<std::sync::MutexGuard<'_, IsamStorage<K, V>>> {
+    /// if the calling thread already holds the lock — in which case blocking on
+    /// `storage.lock()` would hang forever rather than eventually succeeding.
+    ///
+    /// Every caller gets the returned [`StorageGuard`], not a bare `MutexGuard`:
+    /// it records this thread as the owner for as long as it's held, so that
+    /// reentrancy is caught no matter *how* the lock is being held when the
+    /// reentrant call happens — via an open `Transaction`, or via one of the
+    /// admin methods (`compact`, `migrate_values`, `migrate_keys`,
+    /// `migrate_index`) that invoke a caller-supplied closure while holding
+    /// this same guard.
+    pub(crate) fn lock_storage(&self) -> IsamResult<StorageGuard<'_, K, V>> {
         if self.single_user_active.load(Ordering::Acquire) {
             let owner = self
                 .single_user_owner
@@ -78,16 +86,53 @@ where
             }
         }
 
-        self.storage.lock().map_err(|_| IsamError::LockPoisoned)
+        let guard = self.storage.lock().map_err(|_| IsamError::LockPoisoned)?;
+        *self.txn_owner.lock().map_err(|_| IsamError::LockPoisoned)? = Some(std::thread::current().id());
+        Ok(StorageGuard {
+            guard,
+            owner: Arc::clone(&self.txn_owner),
+        })
     }
 
     pub(crate) fn begin(&self) -> IsamResult<Transaction<'_, K, V>> {
         let guard = self.lock_storage()?;
-        *self
-            .txn_owner
-            .lock()
-            .map_err(|_| IsamError::LockPoisoned)? = Some(std::thread::current().id());
-        Ok(Transaction::new(guard, Arc::clone(&self.txn_owner)))
+        Ok(Transaction::new(guard))
+    }
+}
+
+// ── StorageGuard ─────────────────────────────────────────────────────────── //
+
+/// RAII wrapper around the real storage lock, returned by [`TransactionManager::lock_storage`].
+///
+/// Derefs transparently to `IsamStorage<K, V>`, exactly like the `MutexGuard`
+/// it wraps. The only extra behavior is clearing `txn_owner` on drop, which it
+/// does *before* the inner `MutexGuard` is released (custom `Drop::drop` runs
+/// before a struct's fields are automatically dropped, and `guard` is declared
+/// after `owner` is cleared), so there is no window where another thread could
+/// already be the new owner when this runs.
+pub(crate) struct StorageGuard<'a, K, V> {
+    guard: MutexGuard<'a, IsamStorage<K, V>>,
+    owner: Arc<Mutex<Option<ThreadId>>>,
+}
+
+impl<'a, K, V> Deref for StorageGuard<'a, K, V> {
+    type Target = IsamStorage<K, V>;
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl<'a, K, V> DerefMut for StorageGuard<'a, K, V> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl<'a, K, V> Drop for StorageGuard<'a, K, V> {
+    fn drop(&mut self) {
+        if let Ok(mut owner) = self.owner.lock() {
+            *owner = None;
+        }
     }
 }
 
