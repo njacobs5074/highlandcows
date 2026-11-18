@@ -1,14 +1,13 @@
 /// `Transaction<'a, K, V>` — a bounded execution context for ISAM operations.
 ///
-/// Holds the `MutexGuard` for its entire lifetime (serializable isolation) and
-/// an undo log so that a rollback (explicit or via `Drop`) can restore the
+/// Holds the `StorageGuard` for its entire lifetime (serializable isolation)
+/// and an undo log so that a rollback (explicit or via `Drop`) can restore the
 /// index to the state it had before the transaction began.
-use std::sync::MutexGuard;
-
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::IsamResult;
+use crate::manager::StorageGuard;
 use crate::storage::IsamStorage;
 use crate::store::RecordRef;
 
@@ -30,7 +29,7 @@ where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
-    guard: MutexGuard<'a, IsamStorage<K, V>>,
+    guard: StorageGuard<'a, K, V>,
     undo_log: Vec<UndoEntry<K, V>>,
     committed: bool,
 }
@@ -40,7 +39,7 @@ where
     K: Serialize + DeserializeOwned + Ord + Clone,
     V: Serialize + DeserializeOwned,
 {
-    pub(crate) fn new(guard: MutexGuard<'a, IsamStorage<K, V>>) -> Self {
+    pub(crate) fn new(guard: StorageGuard<'a, K, V>) -> Self {
         Self {
             guard,
             undo_log: Vec::new(),
@@ -94,7 +93,7 @@ where
         self.guard.fsync()?;
         self.committed = true;
         Ok(())
-        // MutexGuard drops here, releasing the lock
+        // StorageGuard drops here, clearing txn_owner and releasing the lock.
     }
 
     /// Roll back all changes made in this transaction and release the lock.
@@ -164,5 +163,7 @@ where
         if !self.committed {
             let _ = self.do_rollback();
         }
+        // `guard` (a `StorageGuard`) drops right after this method returns,
+        // clearing `txn_owner` before the real lock is released.
     }
 }

@@ -148,9 +148,12 @@ std::thread::spawn(move || {
 
 > **Note:** `compact()`, `migrate_values()`, `migrate_keys()`, `migrate_index()`,
 > `key_schema_version()`, `val_schema_version()`, and `secondary_indices()` all acquire
-> the database lock internally. They must not be called while a `Transaction` is live on
-> the same thread, as this will deadlock. These are intended as offline administration
-> operations — commit or roll back all open transactions before calling them.
+> the database lock internally. Calling any of them while a `Transaction` is live on the
+> same thread — or, for the four admin methods, calling one of them again from inside a
+> closure passed to `migrate_values`/`migrate_keys`/`migrate_index` while it's running —
+> returns `IsamError::WouldDeadlock` immediately instead of hanging. These are intended
+> as offline administration operations — commit or roll back all open transactions
+> before calling them.
 
 ### Single-user mode
 
@@ -211,7 +214,7 @@ Inside the closure you can call `write`, `read`, `begin_transaction`, and any of
 #### Caveats
 
 - **Consumes `self`**: `as_single_user` takes ownership of the handle. Return `db` from the closure (`Ok(db)`) to keep using it afterward. On error, the handle is dropped — clone before calling if you need to retry on failure.
-- **Deadlock if you hold a transaction**: `as_single_user` waits for the storage lock to be free. If the calling thread already holds an open `Transaction`, the storage lock is already held by that same thread, so the spin will never succeed and the call will time out with `IsamError::Timeout`. Commit or roll back all open transactions on the calling thread before calling `as_single_user`.
+- **Fails if you hold a transaction**: `as_single_user` waits for the storage lock to be free. If the calling thread already holds an open `Transaction`, that wait can never succeed — nothing else can release a lock this thread itself holds — so the call fails immediately with `IsamError::WouldDeadlock` instead of spinning to a timeout. The same applies to `compact`, `migrate_values`, `migrate_keys`, `migrate_index`, and the schema-version getters. Commit or roll back all open transactions on the calling thread before calling any of these.
 - **Not re-entrant**: calling `as_single_user` again from inside the closure returns `IsamError::SingleUserMode`.
 - **In-process only**: the exclusive flag is an in-memory atomic; it does not prevent access from a separate process opening the same database files.
 
@@ -332,7 +335,8 @@ db.migrate_index(name, version, f, token) -> IsamResult<()>
 | `IsamError::CorruptIndex(_)` | index file has an invalid magic number or page type |
 | `IsamError::IndexNotFound(_)` | `migrate_index()` called with an unregistered index name |
 | `IsamError::SingleUserMode` | a non-owner thread attempted an operation while single-user mode is active |
-| `IsamError::Timeout` | an in-flight transaction did not finish within the timeout passed to `as_single_user` |
+| `IsamError::Timeout` | an in-flight transaction (on another thread) did not finish within the timeout passed to `as_single_user` |
+| `IsamError::WouldDeadlock` | the calling thread already holds the database lock (via an open `Transaction`, or from inside its own `migrate_values`/`migrate_keys`/`migrate_index` closure) and would deadlock itself by acquiring it again |
 
 ---
 

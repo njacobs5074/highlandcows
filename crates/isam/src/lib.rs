@@ -252,11 +252,15 @@
 //!   Return `db` from the closure (as `Ok(db)`) if you need to keep using
 //!   it afterward.  If the call returns `Err`, the handle is dropped; clone
 //!   before calling if you need to retry on failure.
-//! - **Deadlock if you hold a transaction**: `as_single_user` waits for the
+//! - **Fails if you hold a transaction**: `as_single_user` waits for the
 //!   storage lock to be free.  If the calling thread already holds an open
-//!   [`Transaction`], the storage lock is already taken, so the spin will
-//!   never succeed and the call will time out.  Commit or roll back all open
-//!   transactions on the calling thread before calling `as_single_user`.
+//!   [`Transaction`], that wait can never succeed — nothing else can release a
+//!   lock this thread itself holds — so the call fails immediately with
+//!   [`IsamError::WouldDeadlock`] instead of spinning to a timeout.  The same
+//!   applies to [`Isam::compact`], [`Isam::migrate_values`],
+//!   [`Isam::migrate_keys`], [`Isam::migrate_index`], and the schema-version
+//!   getters.  Commit or roll back all open transactions on the calling thread
+//!   before calling any of these.
 //! - **Not re-entrant**: calling `as_single_user` again from inside the
 //!   closure returns [`IsamError::SingleUserMode`].
 //! - **In-process only**: the exclusive flag is an in-memory atomic; it does

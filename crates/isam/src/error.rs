@@ -44,6 +44,11 @@ pub enum IsamError {
     /// Timed out waiting to acquire single-user mode (in-flight transaction did not finish in time).
     #[error("timed out waiting to acquire single-user mode")]
     Timeout,
+
+    /// The calling thread already holds the database lock via an open
+    /// `Transaction`; acquiring it again on the same thread would deadlock.
+    #[error("operation would deadlock: the calling thread already holds an open transaction")]
+    WouldDeadlock,
 }
 
 /// Convenience alias — every fallible function in this crate returns this.
