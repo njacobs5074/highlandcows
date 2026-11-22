@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use objc2::runtime::Bool;
 use objc2_event_kit::{EKEntityType, EKEvent, EKEventStore, EKSpan};
 use objc2_foundation::NSError;
@@ -160,8 +160,8 @@ impl CalendarStore {
     /// `calendars`: calendar identifiers to filter by; `None` searches all calendars.
     pub fn fetch_in_range(
         &self,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
+        start: Timestamp,
+        end: Timestamp,
         calendars: Option<&[&str]>,
         _token: &CalendarFullAccessToken,
     ) -> EventKitResult<Vec<CalendarEvent>> {
