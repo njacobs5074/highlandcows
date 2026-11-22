@@ -31,17 +31,17 @@
 //!
 //! ```ignore
 //! use std::time::{SystemTime, UNIX_EPOCH};
-//! use chrono::{DateTime, Duration, Utc};
+//! use jiff::{Timestamp, ToSpan};
 //! use highlandcows_eventkit::{CalendarStore, EventKitResult};
 //!
 //! # fn main() -> EventKitResult<()> {
 //! let store = CalendarStore::builder().connect()?;
 //! let token = store.authorize()?;
 //!
-//! // chrono is built without the `clock` feature, so use SystemTime for now().
+//! // Avoid Timestamp::now() to keep "current time" sourced from one place; use SystemTime.
 //! let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-//! let end: DateTime<Utc> = DateTime::from_timestamp(now_secs, 0).unwrap();
-//! let start = end - Duration::days(7);
+//! let end: Timestamp = Timestamp::from_second(now_secs).unwrap();
+//! let start = end - 168.hours(); // Timestamp arithmetic only accepts hours-or-smaller spans.
 //! for event in store.fetch_in_range(start, end, None, &token)? {
 //!     println!("{} ({:?} – {:?})", event.title, event.start_date, event.end_date);
 //! }
@@ -155,6 +155,7 @@ pub use calendar_builder::CalendarStoreBuilder;
 pub use calendar_event::CalendarEvent;
 pub use calendar_store::CalendarStore;
 pub use error::{EventKitError, EventKitResult};
+pub use jiff;
 pub use list::ReminderList;
 pub use reminder::Reminder;
 pub use source::Source;
