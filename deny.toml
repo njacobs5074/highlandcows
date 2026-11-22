@@ -8,6 +8,7 @@ ignore = [
     # v1.3.3 as a stable, complete release (which the bincode team themselves stated).
     # No safe upgrade path exists; migration to an alternative is a separate project.
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.x intentionally pinned; v1.3.3 is stable per maintainers" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained with no safe upgrade available; migrating highlandcows-eventkit to jiff/time is a separate project" },
 ]
 
 [licenses]
