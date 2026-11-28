@@ -216,9 +216,9 @@ where
     /// - [`IsamError::SingleUserMode`] — single-user mode is already active
     ///   (e.g. called recursively, or another thread holds it).
     /// - [`IsamError::Timeout`] — an in-flight transaction did not finish within
-    ///   `timeout`.  This also occurs if the calling thread itself holds an open
-    ///   [`Transaction`]: the transaction holds the storage lock, so the spin
-    ///   will never succeed and the call will time out.  Commit or roll back all
+    ///   `timeout`.
+    /// - [`IsamError::WouldDeadlock`] — the calling thread itself holds an open
+    ///   [`Transaction`] on this database.  Commit or roll back all
     ///   transactions on the calling thread before calling `as_single_user`.
     ///
     /// # Examples
@@ -258,8 +258,8 @@ where
     /// # Note on error handling
     ///
     /// `as_single_user` consumes `self`.  If it returns `Err` (e.g.
-    /// [`IsamError::Timeout`] or [`IsamError::SingleUserMode`]), the handle is
-    /// dropped.  Clone before calling if you need to retry on failure:
+    /// [`IsamError::Timeout`], [`IsamError::SingleUserMode`], or
+    /// [`IsamError::WouldDeadlock`]), the handle is dropped.  Clone before calling if you need to retry on failure:
     ///
     /// ```
     /// # use tempfile::TempDir;
@@ -325,7 +325,7 @@ where
 
     /// Return information about all secondary indices registered on this database.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread, rather than blocking forever.
@@ -379,6 +379,28 @@ where
     /// [`read`](Self::read) helpers, which handle begin/commit/rollback
     /// automatically.
     ///
+    /// # Errors
+    ///
+    /// Transactions do not nest.  Returns [`IsamError::WouldDeadlock`] if the
+    /// calling thread already holds the database lock.  Pass the existing
+    /// transaction down instead of beginning another one:
+    ///
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::{Isam, IsamError};
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// db.write(|txn| {
+    ///     // A nested `db.read` or `db.write` fails.
+    ///     let nested = db.read(|inner| db.get(inner, &1u32));
+    ///     assert!(matches!(nested, Err(IsamError::WouldDeadlock)));
+    ///
+    ///     // Use the transaction you already have.
+    ///     db.get(txn, &1u32)
+    /// }).unwrap();
+    /// ```
+    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -395,6 +417,11 @@ where
     }
 
     /// Execute a write closure inside a transaction.
+    ///
+    /// Do not call `write`, [`read`](Self::read), or
+    /// [`begin_transaction`](Self::begin_transaction) on this database from
+    /// inside `f`: they return [`IsamError::WouldDeadlock`].  Use the `txn`
+    /// passed to `f`.
     ///
     /// Begins a transaction, passes it to `f`, then commits on `Ok` or rolls
     /// back on `Err`.  The return value of `f` is forwarded to the caller.
@@ -423,6 +450,11 @@ where
     }
 
     /// Execute a read closure inside a transaction.
+    ///
+    /// Do not call `read`, [`write`](Self::write), or
+    /// [`begin_transaction`](Self::begin_transaction) on this database from
+    /// inside `f`: they return [`IsamError::WouldDeadlock`].  Use the `txn`
+    /// passed to `f`.
     ///
     /// Begins a transaction, passes it to `f`, then rolls back unconditionally
     /// (since reads make no changes).  The return value of `f` is forwarded to
@@ -734,7 +766,7 @@ where
     /// Schema versions are set by [`migrate_keys`](Self::migrate_keys) and
     /// default to `0` for newly created databases.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread, rather than blocking forever.
@@ -758,7 +790,7 @@ where
     /// Schema versions are set by [`migrate_values`](Self::migrate_values) and
     /// default to `0` for newly created databases.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread, rather than blocking forever.
@@ -800,7 +832,7 @@ where
     /// **Primary records are not modified.**  Only the named secondary index
     /// is affected; other secondary indices are left untouched.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread — commit or roll back all open transactions on this thread
@@ -903,7 +935,7 @@ where
     /// Rewrites the data and index files atomically via temp-file rename,
     /// then re-opens them in place.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread — commit or roll back all open transactions on this thread
@@ -971,7 +1003,7 @@ where
     /// Records are rewritten to new temp files and atomically renamed into
     /// place.  The key schema version is preserved.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread — commit or roll back all open transactions on this thread
@@ -1057,7 +1089,7 @@ where
     /// Records are rewritten to new temp files and atomically renamed into
     /// place.  The value schema version is preserved.
     ///
-    /// # Deadlock warning
+    /// # Errors
     /// Acquires the database lock internally.  Returns
     /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
     /// same thread — commit or roll back all open transactions on this thread

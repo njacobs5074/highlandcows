@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Breaking Changes
+
+- `highlandcows-isam` adds the `IsamError::WouldDeadlock` variant. Code that
+  matches every `IsamError` variant must handle it.
+
+### Changed
+
+- Taking the database lock again on a thread that already holds it now returns
+  `IsamError::WouldDeadlock` instead of hanging. This covers nested
+  `begin_transaction`, `read`, and `write` calls, `secondary_indices`, the
+  schema-version getters, the maintenance methods, and calls made from inside a
+  `migrate_values`, `migrate_keys`, or `migrate_index` closure.
+- `as_single_user` called while the same thread has a transaction open now
+  returns `IsamError::WouldDeadlock` immediately instead of `IsamError::Timeout`.
+
+---
+
 ## [0.6.0] - 2026-11-22
 
 ### Breaking Changes

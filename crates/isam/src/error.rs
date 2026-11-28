@@ -45,9 +45,10 @@ pub enum IsamError {
     #[error("timed out waiting to acquire single-user mode")]
     Timeout,
 
-    /// The calling thread already holds the database lock via an open
-    /// `Transaction`; acquiring it again on the same thread would deadlock.
-    #[error("operation would deadlock: the calling thread already holds an open transaction")]
+    /// The calling thread already holds the database lock, either through an
+    /// open `Transaction` or from inside a `migrate_values`, `migrate_keys`, or
+    /// `migrate_index` closure; acquiring it again would deadlock.
+    #[error("operation would deadlock: the calling thread already holds the database lock")]
     WouldDeadlock,
 }
 

@@ -4,7 +4,7 @@ mod common;
 use std::assert_matches;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use highlandcows_isam::{IsamError, IsamResult};
 
@@ -236,9 +236,7 @@ fn test_single_user_mode_error_takes_priority_over_would_deadlock() {
     // If a thread both holds its own open Transaction AND a different thread
     // already owns single-user mode, SingleUserMode must win: releasing the
     // caller's own transaction wouldn't be enough to make the call succeed,
-    // since someone else's exclusive hold is the actual blocker. (Before the
-    // checks in `enter_single_user_mode` were reordered, the txn_owner check
-    // ran first and this case returned WouldDeadlock instead.)
+    // since someone else's exclusive hold is the actual blocker.
     let (_dir, db) = common::make_db::<u32, String>();
     let db_a = db.clone();
 
@@ -250,8 +248,13 @@ fn test_single_user_mode_error_takes_priority_over_would_deadlock() {
 
     let handle = thread::spawn(move || db_a.as_single_user(TIMEOUT, |_token, _db| Ok(())));
 
-    // Give thread A time to claim the single-user flag and start spinning.
-    thread::sleep(Duration::from_millis(50));
+    // Wait until thread A has claimed single-user mode.  Until it does, our
+    // own open transaction makes this call return `WouldDeadlock`.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !matches!(db.key_schema_version(), Err(IsamError::SingleUserMode)) {
+        assert!(Instant::now() < deadline, "thread A never claimed single-user mode");
+        thread::yield_now();
+    }
 
     // Even though the main thread holds its own open transaction, thread A
     // already owns single-user mode — that must be reported, not WouldDeadlock.
@@ -426,4 +429,51 @@ fn test_owner_check_is_per_thread_not_global() {
     assert_matches!(result, Ok(0));
 
     handle.join().unwrap();
+}
+
+#[test]
+fn test_as_single_user_while_txn_open_returns_would_deadlock() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let txn = db.begin_transaction().unwrap();
+        let result = db.clone().as_single_user(TIMEOUT, |_token, _db| Ok(()));
+        txn.commit().unwrap();
+
+        // The failed call must release its single-user claim: a different
+        // thread can use the database again.
+        let other = db.clone();
+        let after = thread::spawn(move || other.key_schema_version()).join().unwrap();
+        tx.send((result, after)).unwrap();
+    });
+
+    let (result, after) = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("as_single_user spun instead of failing fast");
+    assert_matches!(result, Err(IsamError::WouldDeadlock));
+    assert_matches!(after, Ok(0));
+}
+
+#[test]
+fn test_nested_read_and_write_return_would_deadlock() {
+    let (_dir, db) = common::make_db::<u32, String>();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let nested = db
+            .write(|_txn| {
+                let read = db.read(|inner| db.get(inner, &1));
+                let write = db.write(|inner| db.insert(inner, 2, &"nested".to_string()));
+                Ok((read, write))
+            })
+            .unwrap();
+        tx.send(nested).unwrap();
+    });
+
+    let (read, write) = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("nested call hung instead of failing fast");
+    assert_matches!(read, Err(IsamError::WouldDeadlock));
+    assert_matches!(write, Err(IsamError::WouldDeadlock));
 }

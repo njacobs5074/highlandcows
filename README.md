@@ -146,11 +146,15 @@ std::thread::spawn(move || {
 });
 ```
 
+> **Note:** transactions do not nest. Calling `begin_transaction`, `read`, or `write` while
+> the same thread already has a transaction open on this database returns
+> `IsamError::WouldDeadlock`. Pass the existing `txn` down instead.
+
 > **Note:** `compact()`, `migrate_values()`, `migrate_keys()`, `migrate_index()`,
 > `key_schema_version()`, `val_schema_version()`, and `secondary_indices()` all acquire
 > the database lock internally. Calling any of them while a `Transaction` is live on the
-> same thread — or, for the four admin methods, calling one of them again from inside a
-> closure passed to `migrate_values`/`migrate_keys`/`migrate_index` while it's running —
+> same thread, or from inside a closure passed to
+> `migrate_values`/`migrate_keys`/`migrate_index` while it's running,
 > returns `IsamError::WouldDeadlock` immediately instead of hanging. These are intended
 > as offline administration operations — commit or roll back all open transactions
 > before calling them.
