@@ -63,7 +63,7 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 
 ### File layout on disk
 
-Each logical database is stored as two files:
+Each logical database is stored as two files, plus two more for each secondary index:
 
 | File | Contents |
 |------|----------|
@@ -75,7 +75,7 @@ Each logical database is stored as two files:
 ### Quick start
 
 ```rust
-use highlandcows::Isam;
+use highlandcows::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
 // Create a new database (pass any path prefix — extensions are added automatically)
 let db: Isam<String, u64> = Isam::create("/tmp/mydb")?;
@@ -102,8 +102,12 @@ db.read(|txn| {
     Ok(())
 })?;
 
-// Remove stale records and reclaim disk space (outside any transaction)
-db.compact()?;
+// Remove stale records and reclaim disk space (requires single-user mode)
+let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    db.compact(token)?;
+    Ok(db)
+})?;
+drop(db);
 
 // Open an existing database
 let db: Isam<String, u64> = Isam::open("/tmp/mydb")?;
@@ -164,7 +168,7 @@ std::thread::spawn(move || {
 `as_single_user` lets one thread take exclusive access to the database for administration operations such as compaction and index migration. While the closure is running, any other thread that calls any `Isam` operation on a clone of the same handle receives `IsamError::SingleUserMode` immediately — those threads are never blocked, they fail fast.
 
 ```rust
-use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
+use highlandcows::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
 let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
     db.compact(token)?;
@@ -272,7 +276,7 @@ A few things to keep in mind:
 - **Transactional** — secondary index changes are rolled back when a transaction rolls back.
 - **Persistent** — index files survive process restarts; re-register the same indices on every `open`.
 - **Composite indices** — not yet built in, but achievable by deriving a tuple key: `type Key = (String, u32)`.
-- **Schema evolution** — use `migrate_index(name, version, f)` to rebuild a secondary index while bumping its `schema_version`.  The closure `f` transforms each primary value before `DeriveKey::derive` runs, letting you adapt the index to updated derivation logic.  Primary records are not modified.  For a plain rebuild without versioning, reopen with `builder.rebuild_index(name)` instead.
+- **Schema evolution** — use `migrate_index(name, version, f, token)` inside `as_single_user` to rebuild a secondary index while bumping its `schema_version`.  The closure `f` transforms each primary value before `DeriveKey::derive` runs, letting you adapt the index to updated derivation logic.  Primary records are not modified.  For a plain rebuild without versioning, reopen with `builder.rebuild_index(name)` instead.
 
 ### API
 
@@ -313,15 +317,18 @@ db.max_key(&mut txn)              -> IsamResult<Option<K>>
 
 // Secondary index lookup and inspection
 handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
+handle.range(&mut txn, a..=b)     -> IsamResult<Vec<(SK, Vec<(K, V)>)>>  // in secondary-key order
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Single-user mode
 db.as_single_user(timeout, |token, db| { ... })  -> IsamResult<T>  // consumes db; return it from closure to keep using it
 
+// Schema versions
+db.key_schema_version()           -> IsamResult<u32>
+db.val_schema_version()           -> IsamResult<u32>
+
 // Offline administration (require a &SingleUserToken — must be called inside as_single_user)
 db.compact(token)                      -> IsamResult<()>
-db.key_schema_version()                -> IsamResult<u32>
-db.val_schema_version()                -> IsamResult<u32>
 db.migrate_values(version, f, token)   -> IsamResult<Isam<K, V2>>
 db.migrate_keys(version, f, token)     -> IsamResult<Isam<K2, V>>
 db.migrate_index(name, version, f, token) -> IsamResult<()>
@@ -350,12 +357,14 @@ db.migrate_index(name, version, f, token) -> IsamResult<()>
 
 A Rust wrapper around Apple's EventKit framework providing full CRUD access to both the system Reminders and Calendar databases.
 
+The examples below depend on `highlandcows-eventkit` directly. Through the umbrella crate, the main types are also available under `highlandcows::eventkit`.
+
 ### Features
 
 - **Two domains, one framework** — `ReminderStore` for tasks, `CalendarStore` for calendar events; both share one underlying `EKEventStore`
 - **Compile-time authorization enforcement** — every CRUD method requires a capability token obtained from `authorize()`. Code that skips authorization does not compile
 - **Blocking authorization** — bridges EventKit's async callback over `std::sync::mpsc`; the calling thread blocks until the system permission dialog is dismissed (or permission was already decided)
-- **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `remove`
+- **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `complete`, `remove`
 - **Full Calendar CRUD** — `fetch`, `fetch_in_range`, `save`, `remove`; `fetch_in_range` is synchronous (no callback bridge needed)
 - **List/calendar enumeration** — `lists`, `default_list` (Reminders); `lists`, `default_calendar` (Calendar)
 - **Reminder list management** — `create_list` (in a named source), `remove_list`
@@ -398,7 +407,7 @@ fn main() -> EventKitResult<()> {
 
 ```rust
 use std::time::{SystemTime, UNIX_EPOCH};
-use jiff::{Timestamp, ToSpan};
+use highlandcows_eventkit::jiff::{Timestamp, ToSpan};
 use highlandcows_eventkit::{CalendarStore, EventKitResult};
 
 fn main() -> EventKitResult<()> {
@@ -435,7 +444,7 @@ EventKit requires user consent before data can be read or written. This crate en
 | `CalendarFullAccessToken` | Calendar read + write | `CalendarStore::authorize()` |
 | `CalendarWriteOnlyToken` | Calendar write only | `CalendarStore::authorize_write_only()` |
 
-The sealed trait hierarchy (`RemindersAccess` / `FullAccess` for Reminders; `CalendarAccess` / `CalendarFullAccess` for Calendar) lets write methods accept either token while fetch methods require the full-access variant.
+The sealed trait hierarchy (`RemindersAccess` / `FullAccess` for Reminders; `CalendarAccess` / `CalendarFullAccess` for Calendar) lets some methods (such as `save`) accept either token, while fetch methods require the full-access variant. Removing reminders, completing them, and managing Reminder lists also require `FullAccessToken`.
 
 Unlike Reminders, Calendar events have a genuine write-only authorization mode in EventKit: `CalendarWriteOnlyToken` permits creating and modifying events without granting read access. For Reminders, `authorize_write_only()` delegates to full access internally (EventKit does not distinguish the two for Reminders).
 
@@ -465,6 +474,7 @@ Plain command-line binaries inherit the TCC identity of the terminal that launch
 | `ReminderStore::fetch_all(lists, &token)` | Fetch all reminders, optionally filtered to specific lists |
 | `ReminderStore::fetch_incomplete(lists, &token)` | Fetch only incomplete (not-yet-done) reminders |
 | `ReminderStore::save(&reminder, &token)` | Create or update a reminder; returns the stable ID |
+| `ReminderStore::complete(id, &token)` | Mark a reminder as completed |
 | `ReminderStore::remove(id, &token)` | Delete a reminder by stable ID |
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
@@ -509,7 +519,7 @@ These tests create and delete real reminders and events in your system databases
 |---------|------|
 | `EventKitError::AuthorizationDenied` | The user denied access, or the required `Info.plist` key is missing |
 | `EventKitError::AuthorizationRestricted` | System policy prevents access (parental controls, MDM) |
-| `EventKitError::AuthorizationNotDetermined` | `authorize()` was not called before a CRUD method |
+| `EventKitError::AuthorizationNotDetermined` | Defined but not currently returned by the crate |
 | `EventKitError::ReminderNotFound(id)` | A reminder with the given ID was not found |
 | `EventKitError::EventNotFound(id)` | A calendar event with the given ID was not found |
 | `EventKitError::ListNotFound(id)` | A reminder list identifier resolved to nothing |
@@ -524,7 +534,7 @@ These tests create and delete real reminders and events in your system databases
 
 ## Building
 
-Requires Rust 1.70 or later. Install via [rustup](https://rustup.rs) if needed.
+Requires a recent stable Rust toolchain (the tests need 1.96 or later). Install via [rustup](https://rustup.rs) if needed.
 
 ```sh
 # Build all crates
@@ -556,6 +566,8 @@ highlandcows/
 │       ├── Cargo.toml
 │       ├── src/
 │       └── tests/
+├── scripts/                    # release script
+├── CHANGELOG.md
 ├── README.md
 └── LICENSE
 ```
@@ -589,7 +601,7 @@ highlandcows/
 
 ### Prerequisites
 
-Rust 1.70 or later. Install via [rustup](https://rustup.rs) if needed.
+A recent stable Rust toolchain (the tests need 1.96 or later). Install via [rustup](https://rustup.rs) if needed.
 
 ### Daily development
 
@@ -635,7 +647,11 @@ Use the release script to bump versions, commit, and tag atomically:
 ./scripts/release.sh 0.4.0
 ```
 
-This patches the version in both `Cargo.toml` files and the `README.md` usage examples,
+Before running it, make sure the release notes are under a `## [Unreleased]` heading in
+`CHANGELOG.md`; the script stops if that heading is missing.
+
+This patches the version in the three crate `Cargo.toml` files and the README usage examples,
+replaces `## [Unreleased]` with the version and today's date,
 runs `cargo check` to validate the workspace compiles, commits all changes, and creates
 an annotated `v0.4.0` tag. Then push:
 

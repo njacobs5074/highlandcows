@@ -19,7 +19,7 @@ Also available via the `highlandcows` umbrella crate:
 
 ```toml
 [dependencies]
-highlandcows = "0.5.3"
+highlandcows = "0.6.0"
 ```
 
 ---
@@ -41,7 +41,7 @@ highlandcows = "0.5.3"
 
 ## File layout on disk
 
-Each logical database is stored as two files:
+Each logical database is stored as two files, plus two more for each secondary index:
 
 | File | Contents |
 |------|----------|
@@ -55,7 +55,7 @@ Each logical database is stored as two files:
 ## Quick start
 
 ```rust
-use highlandcows_isam::Isam;
+use highlandcows_isam::{Isam, DEFAULT_SINGLE_USER_TIMEOUT};
 
 // Create a new database (pass any path prefix — extensions are added automatically)
 let db: Isam<String, u64> = Isam::create("/tmp/mydb")?;
@@ -82,8 +82,12 @@ db.read(|txn| {
     Ok(())
 })?;
 
-// Remove stale records and reclaim disk space (outside any transaction)
-db.compact()?;
+// Remove stale records and reclaim disk space (requires single-user mode)
+let db = db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| {
+    db.compact(token)?;
+    Ok(db)
+})?;
+drop(db);
 
 // Open an existing database
 let db: Isam<String, u64> = Isam::open("/tmp/mydb")?;
@@ -258,7 +262,7 @@ A few things to keep in mind:
 - **Transactional** — secondary index changes are rolled back when a transaction rolls back.
 - **Persistent** — index files survive process restarts; re-register the same indices on every `open`.
 - **Composite indices** — not yet built in, but achievable by deriving a tuple key: `type Key = (String, u32)`.
-- **Schema evolution** — use `migrate_index(name, version, f)` to rebuild a secondary index while bumping its `schema_version`. The closure `f` transforms each primary value before `DeriveKey::derive` runs, letting you adapt the index to updated derivation logic. Primary records are not modified. For a plain rebuild without versioning, reopen with `builder.rebuild_index(name)` instead.
+- **Schema evolution** — use `migrate_index(name, version, f, token)` inside `as_single_user` to rebuild a secondary index while bumping its `schema_version`. The closure `f` transforms each primary value before `DeriveKey::derive` runs, letting you adapt the index to updated derivation logic. Primary records are not modified. For a plain rebuild without versioning, reopen with `builder.rebuild_index(name)` instead.
 
 ---
 
@@ -301,15 +305,18 @@ db.max_key(&mut txn)              -> IsamResult<Option<K>>
 
 // Secondary index lookup and inspection
 handle.lookup(&mut txn, &sk)      -> IsamResult<Vec<(K, V)>>
+handle.range(&mut txn, a..=b)     -> IsamResult<Vec<(SK, Vec<(K, V)>)>>  // in secondary-key order
 db.secondary_indices()            -> IsamResult<Vec<IndexInfo>>
 
 // Single-user mode
 db.as_single_user(timeout, |token, db| { ... })  -> IsamResult<T>  // consumes db; return it from closure to keep using it
 
+// Schema versions
+db.key_schema_version()           -> IsamResult<u32>
+db.val_schema_version()           -> IsamResult<u32>
+
 // Offline administration (require a &SingleUserToken — must be called inside as_single_user)
 db.compact(token)                      -> IsamResult<()>
-db.key_schema_version()                -> IsamResult<u32>
-db.val_schema_version()                -> IsamResult<u32>
 db.migrate_values(version, f, token)   -> IsamResult<Isam<K, V2>>
 db.migrate_keys(version, f, token)     -> IsamResult<Isam<K2, V>>
 db.migrate_index(name, version, f, token) -> IsamResult<()>
