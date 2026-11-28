@@ -12,14 +12,14 @@ A persistent ISAM (Indexed Sequential Access Method) library. Records are stored
 
 ```toml
 [dependencies]
-highlandcows-isam = "0.6.0"
+highlandcows-isam = "0.7.0"
 ```
 
 Also available via the `highlandcows` umbrella crate:
 
 ```toml
 [dependencies]
-highlandcows = "0.6.0"
+highlandcows = "0.7.0"
 ```
 
 ---

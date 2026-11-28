@@ -26,14 +26,14 @@ Add the crate to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-highlandcows = "0.6.0"
+highlandcows = "0.7.0"
 ```
 
 Or, if you prefer to depend on the ISAM crate directly:
 
 ```toml
 [dependencies]
-highlandcows-isam = "0.6.0"
+highlandcows-isam = "0.7.0"
 ```
 
 Then import what you need:
@@ -381,7 +381,7 @@ The examples below depend on `highlandcows-eventkit` directly. Through the umbre
 
 ```toml
 [dependencies]
-highlandcows-eventkit = "0.6.0"
+highlandcows-eventkit = "0.7.0"
 ```
 
 ### Quick start — Reminders
