@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-11-22
+
+### Breaking Changes
+
+- `highlandcows-eventkit` now uses [`jiff`](https://crates.io/crates/jiff) instead of
+  `chrono` for date/time handling. `DateTime<Utc>` is replaced with `jiff::Timestamp`
+  on `Reminder.due_date`, `Reminder.completion_date`, `CalendarEvent.start_date`,
+  `CalendarEvent.end_date`, and `CalendarStore::fetch_in_range`'s `start`/`end`
+  parameters. `highlandcows_eventkit::jiff` is re-exported so callers don't need
+  their own `jiff` dependency to name the type.
+
+  **Before:**
+  ```rust
+  use chrono::{DateTime, Duration, Utc};
+  let end: DateTime<Utc> = DateTime::from_timestamp(now_secs, 0).unwrap();
+  let start = end - Duration::days(7);
+  ```
+
+  **After:**
+  ```rust
+  use highlandcows_eventkit::jiff::{Timestamp, ToSpan};
+  let end: Timestamp = Timestamp::from_second(now_secs).unwrap();
+  let start = end - 168.hours(); // Timestamp arithmetic only accepts hours-or-smaller spans.
+  ```
+
+- `highlandcows-isam` and `highlandcows` are bumped to `0.6.0` in lockstep; neither
+  has any functional change in this release.
+
 ## [0.2.0] - 2026-04-21
 
 ### Breaking Changes

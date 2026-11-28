@@ -1,6 +1,6 @@
 [package]
 name        = "highlandcows-eventkit"
-version = "0.5.8"
+version = "0.6.0"
 edition     = "2021"
 description = "Rust wrapper for Apple's EventKit — CRUD access to macOS Reminders and Calendar"
 license     = "MIT"
@@ -38,7 +38,7 @@ objc2-foundation = { version = "0.3.2", features = [
 ] }
 block2    = "0.6.2"
 thiserror = "2"
-chrono    = { version = "0.4", features = ["std"], default-features = false }
+jiff      = { version = "1", features = ["std"], default-features = false }
 
 [features]
 default = []

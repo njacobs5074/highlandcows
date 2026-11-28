@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use objc2::rc::Retained;
 use objc2_event_kit::{EKEvent, EKEventStore};
 use objc2_foundation::NSString;
@@ -15,8 +15,8 @@ pub struct CalendarEvent {
     pub notes: Option<String>,
     /// Identifier of the containing [`crate::Calendar`].
     pub calendar_identifier: Option<String>,
-    pub start_date: Option<DateTime<Utc>>,
-    pub end_date: Option<DateTime<Utc>>,
+    pub start_date: Option<Timestamp>,
+    pub end_date: Option<Timestamp>,
     pub is_all_day: bool,
     pub location: Option<String>,
 }

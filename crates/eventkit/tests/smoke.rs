@@ -13,8 +13,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Duration, NaiveDate, Utc};
 use highlandcows_eventkit::{CalendarStore, Reminder, ReminderStore};
+use jiff::{Timestamp, ToSpan};
 
 #[test]
 #[ignore = "requires TCC Reminders authorization"]
@@ -122,11 +122,7 @@ fn test_due_date_round_trip() {
     let token = store.authorize().expect("authorization failed");
 
     // Fixed future date (truncated to seconds so NSDateComponents round-trips cleanly).
-    let due: DateTime<Utc> = NaiveDate::from_ymd_opt(2027, 3, 15)
-        .unwrap()
-        .and_hms_opt(14, 30, 0)
-        .unwrap()
-        .and_utc();
+    let due: Timestamp = "2027-03-15T14:30:00Z".parse().unwrap();
 
     let id = store
         .save(
@@ -145,7 +141,7 @@ fn test_due_date_round_trip() {
         .expect("reminder not found after save");
 
     let fetched_due = fetched.due_date.expect("due_date missing after round-trip");
-    let delta = (fetched_due.timestamp() - due.timestamp()).abs();
+    let delta = (fetched_due.as_second() - due.as_second()).abs();
     assert!(
         delta < 2,
         "due_date diverged by {delta}s: saved {due}, got {fetched_due}"
@@ -175,14 +171,16 @@ fn test_calendar_fetch_in_range() {
     let token = store.authorize().expect("calendar authorization failed");
 
     // Fetch everything in the past 7 days — just verifying no panic or error.
-    let end: DateTime<Utc> = {
+    let end: Timestamp = {
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        DateTime::from_timestamp(secs, 0).unwrap()
+        Timestamp::from_second(secs).unwrap()
     };
-    let start = end - Duration::days(7);
+    // Timestamp arithmetic only accepts hours-or-smaller spans — days/weeks are
+    // calendar units and rejected at runtime, so 7 days is spelled as 168 hours.
+    let start = end - 168.hours();
     let events = store
         .fetch_in_range(start, end, None, &token)
         .expect("fetch_in_range failed");
@@ -212,8 +210,8 @@ fn test_calendar_save_and_remove() {
         .unwrap()
         .as_secs();
 
-    let start: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 3600, 0).unwrap();
-    let end: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 7200, 0).unwrap();
+    let start: Timestamp = Timestamp::from_second(ts as i64 + 3600).unwrap();
+    let end: Timestamp = Timestamp::from_second(ts as i64 + 7200).unwrap();
 
     let new = CalendarEvent {
         title: format!("eventkit-test-{ts}"),
@@ -249,8 +247,8 @@ fn test_calendar_update_round_trip() {
         .unwrap()
         .as_secs();
 
-    let start: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 3600, 0).unwrap();
-    let end: DateTime<Utc> = DateTime::from_timestamp(ts as i64 + 7200, 0).unwrap();
+    let start: Timestamp = Timestamp::from_second(ts as i64 + 3600).unwrap();
+    let end: Timestamp = Timestamp::from_second(ts as i64 + 7200).unwrap();
 
     let id = store
         .save(

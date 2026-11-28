@@ -12,7 +12,7 @@ A Rust wrapper around Apple's EventKit framework providing full CRUD access to b
 
 ```toml
 [dependencies]
-highlandcows-eventkit = "0.5.8"
+highlandcows-eventkit = "0.6.0"
 ```
 
 ---
@@ -64,17 +64,17 @@ fn main() -> EventKitResult<()> {
 
 ```rust
 use std::time::{SystemTime, UNIX_EPOCH};
-use chrono::{DateTime, Duration, Utc};
+use jiff::{Timestamp, ToSpan};
 use highlandcows_eventkit::{CalendarStore, EventKitResult};
 
 fn main() -> EventKitResult<()> {
     let store = CalendarStore::builder().connect()?;
     let token = store.authorize()?;
 
-    // chrono is built without the `clock` feature; use SystemTime for the current time.
+    // Avoid Timestamp::now() to keep "current time" sourced from one place; use SystemTime.
     let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-    let end: DateTime<Utc> = DateTime::from_timestamp(now_secs, 0).unwrap();
-    let start = end - Duration::days(7);
+    let end: Timestamp = Timestamp::from_second(now_secs).unwrap();
+    let start = end - 168.hours(); // Timestamp arithmetic only accepts hours-or-smaller spans.
 
     for event in store.fetch_in_range(start, end, None, &token)? {
         println!("{} ({:?} – {:?})", event.title, event.start_date, event.end_date);
@@ -208,7 +208,7 @@ These tests create and delete real reminders and events in your system databases
 | [`objc2-event-kit`](https://crates.io/crates/objc2-event-kit) | Generated bindings for Apple's EventKit framework |
 | [`objc2-foundation`](https://crates.io/crates/objc2-foundation) | Generated bindings for the Foundation framework |
 | [`block2`](https://crates.io/crates/block2) | Rust bindings to Objective-C blocks |
-| [`chrono`](https://crates.io/crates/chrono) | Date and time handling (NSDate ↔ DateTime<Utc> conversion) |
+| [`jiff`](https://crates.io/crates/jiff) | Date and time handling (NSDate ↔ jiff::Timestamp conversion) |
 | [`thiserror`](https://crates.io/crates/thiserror) | Ergonomic error type derivation |
 
 ---

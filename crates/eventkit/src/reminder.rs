@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use objc2::rc::Retained;
 use objc2_event_kit::{EKEventStore, EKReminder};
 use objc2_foundation::{NSString, NSURL};
@@ -15,8 +15,8 @@ pub struct Reminder {
     pub notes: Option<String>,
     /// Identifier of the containing [`crate::ReminderList`].
     pub list_identifier: Option<String>,
-    pub due_date: Option<DateTime<Utc>>,
-    pub completion_date: Option<DateTime<Utc>>,
+    pub due_date: Option<Timestamp>,
+    pub completion_date: Option<Timestamp>,
     pub is_completed: bool,
     /// 0 = none, 1 = high, 5 = medium, 9 = low (EKReminder convention).
     pub priority: u8,
