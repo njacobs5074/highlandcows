@@ -22,7 +22,7 @@ highlandcows-eventkit = "0.6.0"
 - **Two domains, one framework** — `ReminderStore` for tasks, `CalendarStore` for calendar events; both share one underlying `EKEventStore`
 - **Compile-time authorization enforcement** — every CRUD method requires a capability token obtained from `authorize()`. Code that skips authorization does not compile
 - **Blocking authorization** — bridges EventKit's async callback over `std::sync::mpsc`; the calling thread blocks until the system permission dialog is dismissed (or permission was already decided)
-- **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `remove`
+- **Full Reminder CRUD** — `fetch`, `fetch_all`, `fetch_incomplete`, `save`, `complete`, `remove`
 - **Full Calendar CRUD** — `fetch`, `fetch_in_range`, `save`, `remove`; `fetch_in_range` is synchronous (no callback bridge needed)
 - **List/calendar enumeration** — `lists`, `default_list` (Reminders); `lists`, `default_calendar` (Calendar)
 - **Reminder list management** — `create_list` (in a named source), `remove_list`
@@ -64,7 +64,7 @@ fn main() -> EventKitResult<()> {
 
 ```rust
 use std::time::{SystemTime, UNIX_EPOCH};
-use jiff::{Timestamp, ToSpan};
+use highlandcows_eventkit::jiff::{Timestamp, ToSpan};
 use highlandcows_eventkit::{CalendarStore, EventKitResult};
 
 fn main() -> EventKitResult<()> {
@@ -103,7 +103,7 @@ EventKit requires user consent before data can be read or written. This crate en
 | `CalendarFullAccessToken` | Calendar read + write | `CalendarStore::authorize()` |
 | `CalendarWriteOnlyToken` | Calendar write only | `CalendarStore::authorize_write_only()` |
 
-The sealed trait hierarchy (`RemindersAccess` / `FullAccess` for Reminders; `CalendarAccess` / `CalendarFullAccess` for Calendar) lets write methods accept either token while fetch methods require the full-access variant.
+The sealed trait hierarchy (`RemindersAccess` / `FullAccess` for Reminders; `CalendarAccess` / `CalendarFullAccess` for Calendar) lets some methods (such as `save`) accept either token, while fetch methods require the full-access variant. Removing reminders, completing them, and managing Reminder lists also require `FullAccessToken`.
 
 Unlike Reminders, Calendar events have a genuine write-only authorization mode in EventKit: `CalendarWriteOnlyToken` permits creating and modifying events without granting read access. For Reminders, `authorize_write_only()` delegates to full access internally (EventKit does not distinguish the two for Reminders).
 
@@ -137,6 +137,7 @@ Plain command-line binaries inherit the TCC identity of the terminal that launch
 | `ReminderStore::fetch_all(lists, &token)` | Fetch all reminders, optionally filtered to specific lists |
 | `ReminderStore::fetch_incomplete(lists, &token)` | Fetch only incomplete (not-yet-done) reminders |
 | `ReminderStore::save(&reminder, &token)` | Create or update a reminder; returns the stable ID |
+| `ReminderStore::complete(id, &token)` | Mark a reminder as completed |
 | `ReminderStore::remove(id, &token)` | Delete a reminder by stable ID |
 | `ReminderStore::lists(&token)` | Return all Reminder lists visible to this store |
 | `ReminderStore::default_list(&token)` | Return the default list for new reminders |
@@ -187,7 +188,7 @@ These tests create and delete real reminders and events in your system databases
 |---------|------|
 | `EventKitError::AuthorizationDenied` | The user denied access, or the required `Info.plist` key is missing |
 | `EventKitError::AuthorizationRestricted` | System policy prevents access (parental controls, MDM) |
-| `EventKitError::AuthorizationNotDetermined` | `authorize()` was not called before a CRUD method |
+| `EventKitError::AuthorizationNotDetermined` | Defined but not currently returned by the crate |
 | `EventKitError::ReminderNotFound(id)` | A reminder with the given ID was not found |
 | `EventKitError::EventNotFound(id)` | A calendar event with the given ID was not found |
 | `EventKitError::ListNotFound(id)` | A reminder list identifier resolved to nothing |

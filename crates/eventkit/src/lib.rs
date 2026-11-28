@@ -31,7 +31,7 @@
 //!
 //! ```ignore
 //! use std::time::{SystemTime, UNIX_EPOCH};
-//! use jiff::{Timestamp, ToSpan};
+//! use highlandcows_eventkit::jiff::{Timestamp, ToSpan};
 //! use highlandcows_eventkit::{CalendarStore, EventKitResult};
 //!
 //! # fn main() -> EventKitResult<()> {

@@ -211,16 +211,6 @@ where
     /// The return value of `f` is forwarded to the caller.  Single-user mode is
     /// released when `f` returns, including if `f` returns an error or panics.
     ///
-    /// # Errors
-    ///
-    /// - [`IsamError::SingleUserMode`] — single-user mode is already active
-    ///   (e.g. called recursively, or another thread holds it).
-    /// - [`IsamError::Timeout`] — an in-flight transaction did not finish within
-    ///   `timeout`.  This also occurs if the calling thread itself holds an open
-    ///   [`Transaction`]: the transaction holds the storage lock, so the spin
-    ///   will never succeed and the call will time out.  Commit or roll back all
-    ///   transactions on the calling thread before calling `as_single_user`.
-    ///
     /// # Examples
     ///
     /// Running compaction — return `db` from the closure to keep using it:
@@ -258,8 +248,8 @@ where
     /// # Note on error handling
     ///
     /// `as_single_user` consumes `self`.  If it returns `Err` (e.g.
-    /// [`IsamError::Timeout`] or [`IsamError::SingleUserMode`]), the handle is
-    /// dropped.  Clone before calling if you need to retry on failure:
+    /// [`IsamError::Timeout`], [`IsamError::SingleUserMode`], or
+    /// [`IsamError::WouldDeadlock`]), the handle is dropped.  Clone before calling if you need to retry on failure:
     ///
     /// ```
     /// # use tempfile::TempDir;
@@ -272,6 +262,16 @@ where
     ///     Ok(db)
     /// });
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// - [`IsamError::SingleUserMode`] — single-user mode is already active
+    ///   (e.g. called recursively, or another thread holds it).
+    /// - [`IsamError::Timeout`] — an in-flight transaction did not finish within
+    ///   `timeout`.
+    /// - [`IsamError::WouldDeadlock`] — the calling thread itself holds an open
+    ///   [`Transaction`] on this database.  Commit or roll back all
+    ///   transactions on the calling thread before calling `as_single_user`.
     pub fn as_single_user<F, T>(self, timeout: Duration, f: F) -> IsamResult<T>
     where
         F: FnOnce(&SingleUserToken, Isam<K, V>) -> IsamResult<T>,
@@ -325,10 +325,6 @@ where
 
     /// Return information about all secondary indices registered on this database.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -355,6 +351,11 @@ where
     /// assert_eq!(indices.len(), 1);
     /// assert_eq!(indices[0].name, "city");
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     pub fn secondary_indices(&self) -> IsamResult<Vec<IndexInfo>> {
         let guard = self.manager.lock_storage()?;
         Ok(guard
@@ -389,6 +390,28 @@ where
     /// // ... perform operations ...
     /// txn.commit().unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Transactions do not nest.  Returns [`IsamError::WouldDeadlock`] if the
+    /// calling thread already holds the database lock.  Pass the existing
+    /// transaction down instead of beginning another one:
+    ///
+    /// ```
+    /// # use tempfile::TempDir;
+    /// # use highlandcows_isam::{Isam, IsamError};
+    /// # let dir = TempDir::new().unwrap();
+    /// # let path = dir.path().join("db");
+    /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
+    /// db.write(|txn| {
+    ///     // A nested `db.read` or `db.write` fails.
+    ///     let nested = db.read(|inner| db.get(inner, &1u32));
+    ///     assert!(matches!(nested, Err(IsamError::WouldDeadlock)));
+    ///
+    ///     // Use the transaction you already have.
+    ///     db.get(txn, &1u32)
+    /// }).unwrap();
+    /// ```
     pub fn begin_transaction(&self) -> IsamResult<Transaction<'_, K, V>> {
         self.manager.begin()
     }
@@ -410,6 +433,13 @@ where
     /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
     /// db.write(|txn| db.insert(txn, 1u32, &"hello".to_string())).unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Do not call `write`, [`read`](Self::read), or
+    /// [`begin_transaction`](Self::begin_transaction) on this database from
+    /// inside `f`: they return [`IsamError::WouldDeadlock`].  Use the `txn`
+    /// passed to `f`.
     pub fn write<F, T>(&self, f: F) -> IsamResult<T>
     where
         F: FnOnce(&mut Transaction<'_, K, V>) -> IsamResult<T>,
@@ -438,6 +468,13 @@ where
     /// let val = db.read(|txn| db.get(txn, &1u32)).unwrap();
     /// assert_eq!(val, Some("hello".to_string()));
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Do not call `read`, [`write`](Self::write), or
+    /// [`begin_transaction`](Self::begin_transaction) on this database from
+    /// inside `f`: they return [`IsamError::WouldDeadlock`].  Use the `txn`
+    /// passed to `f`.
     pub fn read<F, T>(&self, f: F) -> IsamResult<T>
     where
         F: FnOnce(&mut Transaction<'_, K, V>) -> IsamResult<T>,
@@ -733,10 +770,6 @@ where
     /// Schema versions are set by [`migrate_keys`](Self::migrate_keys) and
     /// default to `0` for newly created databases.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -746,6 +779,11 @@ where
     /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
     /// assert_eq!(db.key_schema_version().unwrap(), 0);
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     pub fn key_schema_version(&self) -> IsamResult<u32> {
         let guard = self.manager.lock_storage()?;
         Ok(guard.index.key_schema_version())
@@ -756,10 +794,6 @@ where
     /// Schema versions are set by [`migrate_values`](Self::migrate_values) and
     /// default to `0` for newly created databases.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread.
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -769,6 +803,11 @@ where
     /// # let db: Isam<u32, String> = Isam::create(&path).unwrap();
     /// assert_eq!(db.val_schema_version().unwrap(), 0);
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread, rather than blocking forever.
     pub fn val_schema_version(&self) -> IsamResult<u32> {
         let guard = self.manager.lock_storage()?;
         Ok(guard.index.val_schema_version())
@@ -796,11 +835,6 @@ where
     ///
     /// **Primary records are not modified.**  Only the named secondary index
     /// is affected; other secondary indices are left untouched.
-    ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
     ///
     /// # Example
     /// ```
@@ -841,6 +875,13 @@ where
     /// let info = db.secondary_indices().unwrap();
     /// assert_eq!(info[0].schema_version, 1);
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     pub fn migrate_index<F>(&self, name: &str, new_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<()>
     where
         F: FnMut(V) -> IsamResult<V>,
@@ -898,11 +939,6 @@ where
     /// Rewrites the data and index files atomically via temp-file rename,
     /// then re-opens them in place.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -916,6 +952,13 @@ where
     /// # txn.commit().unwrap();
     /// db.as_single_user(DEFAULT_SINGLE_USER_TIMEOUT, |token, db| db.compact(token)).unwrap();
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     pub fn compact(&self, _token: &SingleUserToken) -> IsamResult<()> {
         let mut storage = self.manager.lock_storage()?;
 
@@ -964,11 +1007,6 @@ where
     /// Records are rewritten to new temp files and atomically renamed into
     /// place.  The key schema version is preserved.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -987,6 +1025,13 @@ where
     ///     .unwrap();
     /// assert_eq!(db2.val_schema_version().unwrap(), 1);
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     pub fn migrate_values<V2, F>(self, new_val_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<Isam<K, V2>>
     where
         V2: Serialize + DeserializeOwned + Clone + 'static,
@@ -1048,11 +1093,6 @@ where
     /// Records are rewritten to new temp files and atomically renamed into
     /// place.  The value schema version is preserved.
     ///
-    /// # Deadlock warning
-    /// Acquires the database lock internally.  Must not be called while a
-    /// [`Transaction`] is live on the same thread — commit or roll back all
-    /// open transactions before calling [`as_single_user`](Self::as_single_user).
-    ///
     /// # Example
     /// ```
     /// # use tempfile::TempDir;
@@ -1071,6 +1111,13 @@ where
     ///     .unwrap();
     /// assert_eq!(db2.key_schema_version().unwrap(), 1);
     /// ```
+    ///
+    /// # Errors
+    /// Acquires the database lock internally.  Returns
+    /// [`IsamError::WouldDeadlock`] if a [`Transaction`] is already live on the
+    /// same thread — commit or roll back all open transactions on this thread
+    /// before calling it, including from inside the
+    /// [`as_single_user`](Self::as_single_user) closure.
     pub fn migrate_keys<K2, F>(self, new_key_version: u32, mut f: F, _token: &SingleUserToken) -> IsamResult<Isam<K2, V>>
     where
         K2: Serialize + DeserializeOwned + Ord + Clone + 'static,

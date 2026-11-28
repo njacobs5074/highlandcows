@@ -8,6 +8,10 @@
 //! |--------|-------------|
 //! | `highlandcows::Isam` | Persistent ISAM key/value store |
 //! | `highlandcows::Transaction` | ACID transaction handle |
+//! | `highlandcows::DeriveKey` | Trait that defines a secondary index key |
+//! | `highlandcows::IsamBuilder` | Creates or opens a store with secondary indices |
+//! | `highlandcows::SecondaryIndexHandle` | Lookups and range scans on a secondary index |
+//! | `highlandcows::IndexInfo` | Description of a registered secondary index |
 //! | `highlandcows::SingleUserToken` | Capability token required by admin methods (`compact`, `migrate_*`) |
 //! | `highlandcows::DEFAULT_SINGLE_USER_TIMEOUT` | Default 30-second timeout for `as_single_user` |
 //! | `highlandcows::eventkit::ReminderStore` | macOS Reminders CRUD via EventKit (macOS only) |
@@ -15,8 +19,8 @@
 //! | `highlandcows::eventkit::Source` | Account source (iCloud, On My Mac, …) returned by `ReminderStore::sources` |
 
 pub use highlandcows_isam::{
-    Isam, IsamError, IsamIter, IsamResult, RangeIter, SingleUserToken, Transaction,
-    DEFAULT_SINGLE_USER_TIMEOUT,
+    DeriveKey, IndexInfo, Isam, IsamBuilder, IsamError, IsamIter, IsamResult, RangeIter,
+    SecondaryIndexHandle, SingleUserToken, Transaction, DEFAULT_SINGLE_USER_TIMEOUT,
 };
 
 /// Re-exports of [`highlandcows_eventkit`] for macOS Reminders and Calendar access.
