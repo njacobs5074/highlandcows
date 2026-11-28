@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `highlandcows-isam` adds the `IsamError::WouldDeadlock` variant. Code that
   matches every `IsamError` variant must handle it.
 
+### Added
+
+- `highlandcows` re-exports `DeriveKey`, `IsamBuilder`, `SecondaryIndexHandle`,
+  and `IndexInfo`, so secondary indices no longer need a direct
+  `highlandcows-isam` dependency.
+
+### Fixed
+
+- Published packages now include the `LICENSE` file.
+
 ### Changed
 
 - Taking the database lock again on a thread that already holds it now returns
