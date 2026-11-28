@@ -661,6 +661,8 @@ git push && git push origin v0.4.0
 
 The `publish.yml` CI workflow will verify all version strings match the tag before
 publishing to crates.io, and will fail with a diagnostic if anything is out of sync.
+Once all three crates are published, it creates the GitHub release, using that version's
+`CHANGELOG.md` section as the release notes.
 
 ---
 
